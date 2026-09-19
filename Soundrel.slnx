@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="Soundrel.csproj" />
+  <Project Path="Soundrel.Tests/Soundrel.Tests.csproj" />
+</Solution>
