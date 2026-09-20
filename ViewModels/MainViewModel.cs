@@ -9,10 +9,6 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
 {
     private const string SelectLibraryPrompt = "Select a library folder to begin.";
 
-    public static TimeSpan QuickFadeDuration { get; } = TimeSpan.FromSeconds(2);
-
-    public static TimeSpan SlowFadeDuration { get; } = TimeSpan.FromSeconds(10);
-
     private readonly LibraryScanner libraryScanner;
     private readonly SettingsService settingsService;
     private readonly PlaybackController playbackController;
@@ -29,8 +25,13 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
     private IReadOnlyList<LibraryTreeNode> libraryNodes = Array.Empty<LibraryTreeNode>();
     private IReadOnlyList<LibraryTrack> selectedTracks = Array.Empty<LibraryTrack>();
     private IReadOnlyList<AmbienceTrackViewModel> ambienceTracks = Array.Empty<AmbienceTrackViewModel>();
+    private IReadOnlyList<AmbienceTrackViewModel> filteredAmbienceTracks = Array.Empty<AmbienceTrackViewModel>();
     private IReadOnlyList<LibraryScanIssue> scanIssues = Array.Empty<LibraryScanIssue>();
     private IReadOnlyList<PlaybackQueueEntry> explicitQueue = Array.Empty<PlaybackQueueEntry>();
+    private IReadOnlyList<LibraryAmbiencePresets> ambiencePresets = Array.Empty<LibraryAmbiencePresets>();
+    private IReadOnlyList<AmbiencePreset> currentLibraryPresets = Array.Empty<AmbiencePreset>();
+    private AmbiencePreset? selectedAmbiencePreset;
+    private string ambiencePresetName = string.Empty;
     private string? selectedLibraryPath;
     private LibraryPlaylist? selectedPlaylist;
     private string selectedPlaylistName = "No playlist selected";
@@ -49,7 +50,17 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
     private float musicVolume = 1f;
     private float ambienceVolume = 1f;
     private float masterVolume = 1f;
+    private float fastFadeSeconds = AppSettings.DefaultFastFadeSeconds;
+    private float mediumFadeSeconds = AppSettings.DefaultMediumFadeSeconds;
+    private float slowFadeSeconds = AppSettings.DefaultSlowFadeSeconds;
+    private float crossfadeStaggerSeconds = AppSettings.DefaultCrossfadeStaggerSeconds;
     private MasterFadeState masterFadeState = MasterFadeState.Full;
+    private float musicFadeGain = 1f;
+    private MasterFadeState musicFadeState = MasterFadeState.Full;
+    private float ambienceFadeGain = 1f;
+    private MasterFadeState ambienceFadeState = MasterFadeState.Full;
+    private bool isFastFadeSelected = true;
+    private string ambienceSearchText = string.Empty;
     private bool hasPhysicalAmbience;
     private bool isBusy;
     private long playbackErrorNotificationVersion;
@@ -114,8 +125,26 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         {
             if (SetProperty(ref ambienceTracks, value))
             {
+                UpdateFilteredAmbienceTracks();
                 OnPropertyChanged(nameof(CanStopAll));
                 NotifyFadeCommandAvailability();
+            }
+        }
+    }
+
+    public IReadOnlyList<AmbienceTrackViewModel> FilteredAmbienceTracks => filteredAmbienceTracks;
+
+    // Alias retained for the later compact-list binding.
+    public IReadOnlyList<AmbienceTrackViewModel> VisibleAmbienceTracks => FilteredAmbienceTracks;
+
+    public string AmbienceSearchText
+    {
+        get => ambienceSearchText;
+        set
+        {
+            if (SetProperty(ref ambienceSearchText, value ?? string.Empty))
+            {
+                UpdateFilteredAmbienceTracks();
             }
         }
     }
@@ -143,11 +172,64 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
             {
                 OnPropertyChanged(nameof(LibraryPathDisplay));
                 OnPropertyChanged(nameof(CanRescan));
+                RefreshCurrentLibraryPresets(clearSelection: true);
             }
         }
     }
 
     public string LibraryPathDisplay => SelectedLibraryPath ?? "No library selected";
+
+    public IReadOnlyList<AmbiencePreset> CurrentLibraryPresets => currentLibraryPresets;
+
+    public AmbiencePreset? SelectedAmbiencePreset
+    {
+        get => selectedAmbiencePreset;
+        set
+        {
+            if (!SetProperty(ref selectedAmbiencePreset, value))
+            {
+                return;
+            }
+
+            if (value is not null && !string.Equals(ambiencePresetName, value.Name, StringComparison.Ordinal))
+            {
+                ambiencePresetName = value.Name;
+                OnPropertyChanged(nameof(AmbiencePresetName));
+            }
+
+            OnPropertyChanged(nameof(CanSaveAmbiencePreset));
+            OnPropertyChanged(nameof(CanDeleteAmbiencePreset));
+            OnPropertyChanged(nameof(CanApplyAmbiencePreset));
+        }
+    }
+
+    public string AmbiencePresetName
+    {
+        get => ambiencePresetName;
+        set
+        {
+            value ??= string.Empty;
+            if (SetProperty(ref ambiencePresetName, value))
+            {
+                OnPropertyChanged(nameof(CanSaveAmbiencePreset));
+            }
+        }
+    }
+
+    public bool CanSaveAmbiencePreset =>
+        !IsDisposed &&
+        !string.IsNullOrWhiteSpace(AmbiencePresetName) &&
+        TryGetCurrentLibraryRoot(out _);
+
+    public bool CanDeleteAmbiencePreset =>
+        !IsDisposed &&
+        SelectedAmbiencePreset is not null &&
+        TryGetCurrentLibraryRoot(out _);
+
+    public bool CanApplyAmbiencePreset =>
+        !IsDisposed &&
+        SelectedAmbiencePreset is not null &&
+        TryGetCurrentLibraryRoot(out _);
 
     public string SelectedPlaylistName
     {
@@ -180,7 +262,7 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         }
     }
 
-    public string ActivePlaylistDisplay => ActivePlaylist?.Name ?? "None";
+    public string ActivePlaylistDisplay => ActivePlaylist?.QualifiedDisplayName ?? "None";
 
     public LibraryPlaylist? PendingPlaylist
     {
@@ -195,7 +277,7 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         }
     }
 
-    public string PendingPlaylistDisplay => PendingPlaylist?.Name ?? "None";
+    public string PendingPlaylistDisplay => PendingPlaylist?.QualifiedDisplayName ?? "None";
 
     public LibraryTrack? CurrentTrack
     {
@@ -232,7 +314,7 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         }
     }
 
-    public string CurrentPlaylistDisplay => CurrentPlaylist?.Name ?? "None";
+    public string CurrentPlaylistDisplay => CurrentPlaylist?.QualifiedDisplayName ?? "None";
 
     public PlaybackState PlaybackState
     {
@@ -324,7 +406,9 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
             {
                 OnPropertyChanged(nameof(IsHardCutSelected));
                 OnPropertyChanged(nameof(IsCrossfadeSelected));
-                OnPropertyChanged(nameof(PlayNowLabel));
+                OnPropertyChanged(nameof(TransitionModeLabel));
+                OnPropertyChanged(nameof(TransitionLabel));
+                OnPropertyChanged(nameof(ImmediateTransitionModeLabel));
             }
         }
     }
@@ -335,11 +419,17 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
     public bool IsCrossfadeSelected =>
         PreferredImmediateTransitionMode == ImmediateTransitionMode.Crossfade;
 
-    public string PlayNowLabel => PreferredImmediateTransitionMode switch
+    public string PlayNowLabel => "Play Now";
+
+    public string TransitionModeLabel => PreferredImmediateTransitionMode switch
     {
-        ImmediateTransitionMode.Crossfade => "Play Now (Crossfade)",
-        _ => "Play Now (Hard Cut)",
+        ImmediateTransitionMode.Crossfade => "Transition: Crossfade",
+        _ => "Transition: Hard Cut",
     };
+
+    public string TransitionLabel => TransitionModeLabel;
+
+    public string ImmediateTransitionModeLabel => TransitionModeLabel;
 
     public float MasterGain
     {
@@ -349,12 +439,80 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
             if (SetProperty(ref masterGain, value))
             {
                 OnPropertyChanged(nameof(MasterGainDisplay));
+                OnPropertyChanged(nameof(MasterFadeGainDisplay));
+                OnPropertyChanged(nameof(MasterFadeGain));
             }
         }
     }
 
     public string MasterGainDisplay =>
         $"{Math.Clamp((int)Math.Round(MasterGain * 100), 0, 100)}%";
+
+    public string MasterFadeGainDisplay => MasterGainDisplay;
+
+    public float MasterFadeGain => MasterGain;
+
+    public float MusicFadeGain
+    {
+        get => musicFadeGain;
+        private set
+        {
+            if (SetProperty(ref musicFadeGain, NormalizeVolume(value, musicFadeGain)))
+            {
+                OnPropertyChanged(nameof(MusicFadeGainDisplay));
+            }
+        }
+    }
+
+    public string MusicFadeGainDisplay => FormatPercent(MusicFadeGain);
+
+    public MasterFadeState MusicFadeState
+    {
+        get => musicFadeState;
+        private set
+        {
+            if (SetProperty(ref musicFadeState, value))
+            {
+                OnPropertyChanged(nameof(MusicFadeStateDisplay));
+                OnPropertyChanged(nameof(MusicFadeDirectionLabel));
+                OnPropertyChanged(nameof(MusicFadeLabel));
+                NotifyFadeCommandAvailability();
+            }
+        }
+    }
+
+    public string MusicFadeStateDisplay => FormatFadeState(MusicFadeState);
+
+    public float AmbienceFadeGain
+    {
+        get => ambienceFadeGain;
+        private set
+        {
+            if (SetProperty(ref ambienceFadeGain, NormalizeVolume(value, ambienceFadeGain)))
+            {
+                OnPropertyChanged(nameof(AmbienceFadeGainDisplay));
+            }
+        }
+    }
+
+    public string AmbienceFadeGainDisplay => FormatPercent(AmbienceFadeGain);
+
+    public MasterFadeState AmbienceFadeState
+    {
+        get => ambienceFadeState;
+        private set
+        {
+            if (SetProperty(ref ambienceFadeState, value))
+            {
+                OnPropertyChanged(nameof(AmbienceFadeStateDisplay));
+                OnPropertyChanged(nameof(AmbienceFadeDirectionLabel));
+                OnPropertyChanged(nameof(AmbienceFadeLabel));
+                NotifyFadeCommandAvailability();
+            }
+        }
+    }
+
+    public string AmbienceFadeStateDisplay => FormatFadeState(AmbienceFadeState);
 
     public float MusicVolume
     {
@@ -401,6 +559,14 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
 
     public string MasterVolumeDisplay => FormatPercent(MasterVolume);
 
+    public TimeSpan ConfiguredFastFadeDuration => TimeSpan.FromSeconds(fastFadeSeconds);
+
+    public TimeSpan ConfiguredMediumFadeDuration => TimeSpan.FromSeconds(mediumFadeSeconds);
+
+    public TimeSpan ConfiguredSlowFadeDuration => TimeSpan.FromSeconds(slowFadeSeconds);
+
+    public TimeSpan ConfiguredCrossfadeStaggerDuration => TimeSpan.FromSeconds(crossfadeStaggerSeconds);
+
     public MasterFadeState MasterFadeState
     {
         get => masterFadeState;
@@ -409,6 +575,8 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
             if (SetProperty(ref masterFadeState, value))
             {
                 OnPropertyChanged(nameof(MasterFadeStateDisplay));
+                OnPropertyChanged(nameof(MasterFadeDirectionLabel));
+                OnPropertyChanged(nameof(MasterFadeLabel));
                 NotifyFadeCommandAvailability();
             }
         }
@@ -422,6 +590,43 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         _ => "Full",
     };
 
+    public string MasterFadeDirectionLabel => GetFadeDirectionLabel(MasterFadeState);
+
+    public string MusicFadeDirectionLabel => GetFadeDirectionLabel(MusicFadeState);
+
+    public string AmbienceFadeDirectionLabel => GetFadeDirectionLabel(AmbienceFadeState);
+
+    public bool IsFastFadeSelected
+    {
+        get => isFastFadeSelected;
+        private set
+        {
+            if (SetProperty(ref isFastFadeSelected, value))
+            {
+                OnPropertyChanged(nameof(IsSlowFadeSelected));
+                OnPropertyChanged(nameof(IsFastFade));
+                OnPropertyChanged(nameof(IsSlowFade));
+                OnPropertyChanged(nameof(FadeSpeedLabel));
+                OnPropertyChanged(nameof(FadeSpeedDisplay));
+                OnPropertyChanged(nameof(MasterFadeSpeedLabel));
+            }
+        }
+    }
+
+    public bool IsSlowFadeSelected => !IsFastFadeSelected;
+
+    public bool IsFastFade => IsFastFadeSelected;
+
+    public bool IsSlowFade => IsSlowFadeSelected;
+
+    public string FadeSpeedLabel => IsFastFadeSelected
+        ? $"Fast ({FormatDuration(ConfiguredFastFadeDuration)})"
+        : $"Slow ({FormatDuration(ConfiguredSlowFadeDuration)})";
+
+    public string FadeSpeedDisplay => FadeSpeedLabel;
+
+    public string MasterFadeSpeedLabel => FadeSpeedLabel;
+
     public bool CanPlaySelectedPlaylist => SelectedPlaylist is not null && !IsDisposed;
 
     public bool CanPlayNow =>
@@ -433,7 +638,13 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
     public bool CanQueueTrack =>
         SelectedPlaylist is not null &&
         !IsDisposed &&
-        !IsPlaybackOperationInFlight(PlaybackOperation.QueueTrack);
+            !IsPlaybackOperationInFlight(PlaybackOperation.QueueTrack);
+
+    public bool CanPlayTrackNow => CanPlaySelectedPlaylist && !IsDisposed &&
+        !IsPlaybackOperationInFlight(PlaybackOperation.PlayNowTrack);
+
+    public bool CanPlayTrackNowFor(LibraryTrack track) =>
+        track is not null && CanPlayTrackNow && SelectedTracks.Contains(track);
 
     public string PauseResumeLabel => PlaybackState switch
     {
@@ -477,6 +688,27 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
 
     public bool CanSlowFadeOut => CanFadeOut &&
         !IsPlaybackOperationInFlight(PlaybackOperation.SlowFadeOut);
+
+    public bool CanFadeMusic => HasMusicPlayback &&
+        !IsDisposed && !IsPlaybackOperationInFlight(PlaybackOperation.FadeMusic);
+
+    public bool CanFadeAmbience => HasActiveAmbience &&
+        !IsDisposed && !IsPlaybackOperationInFlight(PlaybackOperation.FadeAmbience);
+
+    public bool CanFadeMaster => HasActivePlayback &&
+        !IsDisposed && !IsPlaybackOperationInFlight(PlaybackOperation.FadeMaster);
+
+    public bool CanToggleMusicFade => CanFadeMusic;
+
+    public bool CanToggleAmbienceFade => CanFadeAmbience;
+
+    public bool CanToggleMasterFade => CanFadeMaster;
+
+    public string MusicFadeLabel => MusicFadeDirectionLabel;
+
+    public string AmbienceFadeLabel => AmbienceFadeDirectionLabel;
+
+    public string MasterFadeLabel => MasterFadeDirectionLabel;
 
     public string StatusText
     {
@@ -526,17 +758,34 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
             MusicVolume = loadResult.Settings.MusicVolume;
             AmbienceVolume = loadResult.Settings.AmbienceVolume;
             MasterVolume = loadResult.Settings.MasterVolume;
+            ApplyTimingSettings(loadResult.Settings);
+            SetPersistedAmbiencePresets(loadResult.Settings.AmbiencePresets);
             await ApplyInitialPlaybackSettingsAsync();
+
+            string? initialStatus = loadResult.Warning;
+            if (loadResult.RequiresPersistenceMigration)
+            {
+                try
+                {
+                    await SaveSettingsAsync(loadResult.Settings);
+                }
+                catch (Exception exception)
+                {
+                    initialStatus = JoinMessages(
+                        initialStatus,
+                        $"Legacy settings were migrated in memory but could not be saved: {exception.Message}");
+                }
+            }
 
             if (string.IsNullOrWhiteSpace(loadResult.Settings.SelectedLibraryPath))
             {
                 ClearLibrary();
-                StatusText = JoinMessages(loadResult.Warning, SelectLibraryPrompt);
+                StatusText = JoinMessages(initialStatus, SelectLibraryPrompt);
                 return;
             }
 
-            SelectedLibraryPath = loadResult.Settings.SelectedLibraryPath;
-            await ScanCurrentLibraryAsync(loadResult.Warning);
+            SelectedLibraryPath = NormalizeLibraryPathForSelection(loadResult.Settings.SelectedLibraryPath);
+            await ScanCurrentLibraryAsync(initialStatus);
         }
         finally
         {
@@ -555,9 +804,9 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
 
         try
         {
-            SelectedLibraryPath = libraryPath;
+            SelectedLibraryPath = NormalizeLibraryPathForSelection(libraryPath);
             Task settingsSaveTask = SaveSettingsAsync(
-                libraryPath,
+                SelectedLibraryPath,
                 PreferredImmediateTransitionMode);
             await ScanCurrentLibraryAsync();
 
@@ -606,7 +855,7 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         }
 
         SelectedPlaylist = node.Playlist;
-        SelectedPlaylistName = node.Playlist.Name;
+        SelectedPlaylistName = node.Playlist.QualifiedDisplayName;
         SelectedTracks = node.Playlist.Tracks;
     }
 
@@ -614,12 +863,45 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
     {
         LibraryPlaylist? playlist = SelectedPlaylist;
         ImmediateTransitionMode transitionMode = PreferredImmediateTransitionMode;
+        TimeSpan fadeDuration = SelectedAutomaticFadeDuration;
         return playlist is null
             ? Task.CompletedTask
             : RunPlaybackOperationAsync(
                 PlaybackOperation.PlayNow,
-                () => playbackController.PlayNowAsync(playlist, transitionMode));
+                () => playbackController.PlayNowAsync(playlist, transitionMode, fadeDuration));
     }
+
+    public Task PlayNowAsync(LibraryTrack track)
+    {
+        ArgumentNullException.ThrowIfNull(track);
+        LibraryPlaylist? sourcePlaylist = SelectedPlaylist;
+        if (sourcePlaylist is null || !SelectedTracks.Contains(track))
+        {
+            return Task.CompletedTask;
+        }
+
+        ImmediateTransitionMode transitionMode = PreferredImmediateTransitionMode;
+        TimeSpan fadeDuration = SelectedAutomaticFadeDuration;
+        return RunPlaybackOperationAsync(
+            PlaybackOperation.PlayNowTrack,
+            () => playbackController.PlayNowAsync(
+                track,
+                sourcePlaylist,
+                transitionMode,
+                fadeDuration));
+    }
+
+    public Task PlayTrackNowAsync(LibraryTrack track) => PlayNowAsync(track);
+
+    public Task ToggleImmediateTransitionModeAsync() =>
+        SetImmediateTransitionModeAsync(
+            PreferredImmediateTransitionMode == ImmediateTransitionMode.HardCut
+                ? ImmediateTransitionMode.Crossfade
+                : ImmediateTransitionMode.HardCut);
+
+    public Task ToggleTransitionModeAsync() => ToggleImmediateTransitionModeAsync();
+
+    public Task ToggleTransitionMode() => ToggleImmediateTransitionModeAsync();
 
     public Task SetImmediateTransitionModeAsync(ImmediateTransitionMode mode)
     {
@@ -668,16 +950,20 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         RunPlaybackOperationAsync(PlaybackOperation.ClearQueue, playbackController.ClearQueueAsync);
 
     public Task StopAllAsync() =>
-        RunPlaybackOperationAsync(PlaybackOperation.StopAll, playbackController.StopAllAsync);
+        RunStopAllWithDuration(SelectedAutomaticFadeDuration);
 
     public Task PlayAmbienceAsync(AmbienceTrackViewModel track)
     {
         ArgumentNullException.ThrowIfNull(track);
         float sourceGain = track.Gain;
+        TimeSpan fadeDuration = SelectedAutomaticFadeDuration;
         return RunPlaybackOperationAsync(
             PlaybackOperation.PlayAmbience,
             GetPathIdentity(track.FilePath),
-            () => playbackController.PlayAmbienceAsync(track.Track, sourceGain));
+            () => playbackController.PlayAmbienceAsync(
+                track.Track,
+                sourceGain,
+                fadeDuration));
     }
 
     public Task StopAmbienceAsync(AmbienceTrackViewModel track)
@@ -687,6 +973,170 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
             PlaybackOperation.StopAmbience,
             GetPathIdentity(track.FilePath),
             () => playbackController.StopAmbienceAsync(track.Track));
+    }
+
+    public Task ToggleAmbienceAsync(AmbienceTrackViewModel track)
+    {
+        ArgumentNullException.ThrowIfNull(track);
+        return track.CanStop
+            ? StopAmbienceAsync(track)
+            : PlayAmbienceAsync(track);
+    }
+
+    public Task ToggleAmbiencePlayAsync(AmbienceTrackViewModel track) => ToggleAmbienceAsync(track);
+
+    public Task ToggleAmbience(AmbienceTrackViewModel track) => ToggleAmbienceAsync(track);
+
+    public Task SaveAmbiencePresetAsync(string? name = null)
+    {
+        string presetName = (name ?? AmbiencePresetName).Trim();
+        if (presetName.Length == 0 || !TryGetCurrentLibraryRoot(out string libraryRoot))
+        {
+            return Task.CompletedTask;
+        }
+
+        return RunPlaybackOperationAsync(
+            PlaybackOperation.SaveAmbiencePreset,
+            async () =>
+            {
+                PlaybackSnapshot snapshot = playbackController.Snapshot;
+                var tracks = new List<AmbiencePresetTrack>();
+                string ambienceRoot = GetAmbienceRoot(libraryRoot);
+                foreach (AmbiencePlaybackSnapshot source in snapshot.AmbienceSnapshots)
+                {
+                    if (source.State is not (AmbiencePlaybackState.FadingIn or AmbiencePlaybackState.Playing) ||
+                        !float.IsFinite(source.SourceGain) ||
+                        source.SourceGain is < 0f or > 1f)
+                    {
+                        continue;
+                    }
+
+                    if (!TryGetRelativeAmbiencePath(
+                            source.FilePath,
+                            libraryRoot,
+                            ambienceRoot,
+                            out string relativePath))
+                    {
+                        continue;
+                    }
+
+                    tracks.Add(new AmbiencePresetTrack(relativePath, source.SourceGain));
+                }
+
+                AmbiencePreset preset = new(presetName, tracks.ToArray());
+                IReadOnlyList<LibraryAmbiencePresets> updatedPresets = UpsertAmbiencePreset(
+                    libraryRoot,
+                    preset);
+                AppSettings? settings = null;
+                await RunOnUiContextAsync(() =>
+                {
+                    ambiencePresets = updatedPresets;
+                    if (IsCurrentLibrary(libraryRoot))
+                    {
+                        RefreshCurrentLibraryPresets(clearSelection: false);
+                        SelectedAmbiencePreset = CurrentLibraryPresets.FirstOrDefault(
+                            candidate => string.Equals(candidate.Name, presetName, StringComparison.OrdinalIgnoreCase));
+                        AmbiencePresetName = presetName;
+                    }
+                    settings = CreateSettings(SelectedLibraryPath, PreferredImmediateTransitionMode);
+                }).ConfigureAwait(false);
+
+                try
+                {
+                    await SaveSettingsAsync(settings!).ConfigureAwait(false);
+                    await RunOnUiContextAsync(() => StatusText =
+                        $"Ambience preset '{presetName}' saved with {tracks.Count} source(s).").ConfigureAwait(false);
+                }
+                catch (Exception exception)
+                {
+                    await RunOnUiContextAsync(() => StatusText = JoinMessages(
+                        StatusText,
+                        $"The ambience preset could not be saved to settings: {exception.Message}")).ConfigureAwait(false);
+                }
+            });
+    }
+
+    public Task ApplyAmbiencePresetAsync()
+    {
+        AmbiencePreset? preset = SelectedAmbiencePreset;
+        if (preset is null || !TryGetCurrentLibraryRoot(out string libraryRoot))
+        {
+            return Task.CompletedTask;
+        }
+
+        // Capture the selection and the complete (unfiltered) catalogue at
+        // invocation time. The controller snapshot is read inside the FIFO
+        // item so preceding ambience commands are observed in order.
+        AmbiencePreset selectedPreset = preset;
+        HashSet<string> catalogPaths = AmbienceTracks
+            .Select(track => GetPathIdentity(track.FilePath))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        TimeSpan automaticFadeDuration = SelectedAutomaticFadeDuration;
+        return RunPlaybackOperationAsync(
+            PlaybackOperation.ApplyAmbiencePreset,
+            async () =>
+            {
+                PlaybackSnapshot snapshot = playbackController.Snapshot;
+                string ambienceRoot = GetAmbienceRoot(libraryRoot);
+                var targets = new List<AmbiencePresetTarget>();
+                var skippedPaths = new List<string>();
+                foreach (AmbiencePresetTrack track in selectedPreset.Tracks)
+                {
+                    if (!AmbiencePresetPath.TryNormalizeRelativeTrackPath(
+                            track.RelativePath,
+                            libraryRoot,
+                            out string relativePath))
+                    {
+                        skippedPaths.Add(track.RelativePath);
+                        continue;
+                    }
+
+                    string filePath = GetPathIdentity(Path.Combine(
+                        ambienceRoot,
+                        relativePath.Replace('/', Path.DirectorySeparatorChar)));
+                    bool representedByController = snapshot.AmbienceSnapshots.Any(source =>
+                        string.Equals(GetPathIdentity(source.FilePath), filePath, StringComparison.OrdinalIgnoreCase));
+                    if (!catalogPaths.Contains(filePath) && !representedByController)
+                    {
+                        skippedPaths.Add(relativePath);
+                        continue;
+                    }
+
+                    targets.Add(new AmbiencePresetTarget(filePath, track.SourceVolume));
+                }
+
+                AmbiencePresetApplicationResult result =
+                    await playbackController.ApplyAmbiencePresetAsync(
+                        targets,
+                        automaticFadeDuration).ConfigureAwait(false);
+                string status =
+                    $"Ambience preset '{selectedPreset.Name}' applied: {result.SucceededCount} source(s).";
+                if (skippedPaths.Count > 0)
+                {
+                    status += $" Skipped missing source(s): {string.Join(", ", skippedPaths)}.";
+                }
+
+                if (result.HasFailures)
+                {
+                    status += $" {result.FailureCount} source(s) failed: " +
+                        string.Join(" ", result.Failures.Select(failure => failure.Message));
+                }
+
+                await RunOnUiContextAsync(() => StatusText = status).ConfigureAwait(false);
+            });
+    }
+
+    public Task DeleteAmbiencePresetAsync()
+    {
+        AmbiencePreset? preset = SelectedAmbiencePreset;
+        if (preset is null || !TryGetCurrentLibraryRoot(out string libraryRoot))
+        {
+            return Task.CompletedTask;
+        }
+
+        return RunPlaybackOperationAsync(
+            PlaybackOperation.DeleteAmbiencePreset,
+            () => DeleteAmbiencePresetCoreAsync(preset, libraryRoot));
     }
 
     public async Task SetAmbienceSourceGainAsync(AmbienceTrackViewModel track, float sourceGain)
@@ -711,22 +1161,72 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
     public Task QuickFadeInAsync() => RunFadeAsync(
         PlaybackOperation.QuickFadeIn,
         MasterFadeDirection.In,
-        QuickFadeDuration);
+        ConfiguredFastFadeDuration);
 
     public Task QuickFadeOutAsync() => RunFadeAsync(
         PlaybackOperation.QuickFadeOut,
         MasterFadeDirection.Out,
-        QuickFadeDuration);
+        ConfiguredFastFadeDuration);
 
     public Task SlowFadeInAsync() => RunFadeAsync(
         PlaybackOperation.SlowFadeIn,
         MasterFadeDirection.In,
-        SlowFadeDuration);
+        ConfiguredSlowFadeDuration);
 
     public Task SlowFadeOutAsync() => RunFadeAsync(
         PlaybackOperation.SlowFadeOut,
         MasterFadeDirection.Out,
-        SlowFadeDuration);
+        ConfiguredSlowFadeDuration);
+
+    public void ToggleFadeSpeed() => IsFastFadeSelected = !IsFastFadeSelected;
+
+    public Task ToggleFadeSpeedAsync()
+    {
+        ToggleFadeSpeed();
+        return Task.CompletedTask;
+    }
+
+    public Task ToggleMasterFadeAsync()
+    {
+        TimeSpan fadeDuration = SelectedFadeDuration;
+        return RunStateAwareFadeAsync(
+            PlaybackOperation.FadeMaster,
+            snapshot => snapshot.MasterFadeState,
+            fadeDuration,
+            direction => playbackController.FadeMasterAsync(direction, fadeDuration));
+    }
+
+    public Task ToggleMusicFadeAsync()
+    {
+        TimeSpan fadeDuration = SelectedFadeDuration;
+        return RunStateAwareFadeAsync(
+            PlaybackOperation.FadeMusic,
+            snapshot => snapshot.MusicFadeState,
+            fadeDuration,
+            direction => playbackController.FadeMusicAsync(direction, fadeDuration));
+    }
+
+    public Task ToggleAmbienceFadeAsync()
+    {
+        TimeSpan fadeDuration = SelectedFadeDuration;
+        return RunStateAwareFadeAsync(
+            PlaybackOperation.FadeAmbience,
+            snapshot => snapshot.AmbienceFadeState,
+            fadeDuration,
+            direction => playbackController.FadeAmbienceAsync(direction, fadeDuration));
+    }
+
+    public Task ToggleMusicFade() => ToggleMusicFadeAsync();
+
+    public Task ToggleAmbienceFade() => ToggleAmbienceFadeAsync();
+
+    public Task ToggleMasterFade() => ToggleMasterFadeAsync();
+
+    public Task FadeMusicAsync() => ToggleMusicFadeAsync();
+
+    public Task FadeAmbienceAsync() => ToggleAmbienceFadeAsync();
+
+    public Task FadeMasterAsync() => ToggleMasterFadeAsync();
 
     public async Task UpdatePlaybackProgressAsync()
     {
@@ -742,6 +1242,7 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
             await RunOnUiContextAsync(() =>
             {
                 ApplyPlaybackSnapshot(snapshot);
+                ApplyFadeProgress(progress);
                 if (progress.PlaybackId is null || progress.PlaybackId != snapshot.CurrentPlaybackId)
                 {
                     return;
@@ -888,6 +1389,180 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         SelectedTracks = Array.Empty<LibraryTrack>();
     }
 
+    private async Task DeleteAmbiencePresetCoreAsync(
+        AmbiencePreset preset,
+        string libraryRoot)
+    {
+        IReadOnlyList<LibraryAmbiencePresets> updatedPresets = RemoveAmbiencePreset(
+            libraryRoot,
+            preset.Name,
+            ambiencePresets);
+        AppSettings? settings = null;
+        await RunOnUiContextAsync(() =>
+        {
+            ambiencePresets = updatedPresets;
+            if (IsCurrentLibrary(libraryRoot))
+            {
+                RefreshCurrentLibraryPresets(clearSelection: true);
+            }
+            settings = CreateSettings(SelectedLibraryPath, PreferredImmediateTransitionMode);
+        }).ConfigureAwait(false);
+
+        try
+        {
+            await SaveSettingsAsync(settings!).ConfigureAwait(false);
+            await RunOnUiContextAsync(() => StatusText =
+                $"Ambience preset '{preset.Name}' deleted.").ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            await RunOnUiContextAsync(() => StatusText = JoinMessages(
+                StatusText,
+                $"The ambience preset could not be deleted from settings: {exception.Message}")).ConfigureAwait(false);
+        }
+    }
+
+    private void SetPersistedAmbiencePresets(IReadOnlyList<LibraryAmbiencePresets>? presets)
+    {
+        ambiencePresets = presets ?? Array.Empty<LibraryAmbiencePresets>();
+        RefreshCurrentLibraryPresets(clearSelection: true);
+    }
+
+    private void RefreshCurrentLibraryPresets(bool clearSelection)
+    {
+        string? libraryRoot = null;
+        if (AmbiencePresetPath.TryNormalizeLibraryRootPath(SelectedLibraryPath, out string normalizedRoot))
+        {
+            libraryRoot = normalizedRoot;
+        }
+
+        currentLibraryPresets = libraryRoot is null
+            ? Array.Empty<AmbiencePreset>()
+            : ambiencePresets
+                .FirstOrDefault(group => string.Equals(
+                    group.LibraryRootPath,
+                    libraryRoot,
+                    StringComparison.OrdinalIgnoreCase))?.Presets
+                .OrderBy(preset => preset.Name, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(preset => preset.Name, StringComparer.Ordinal)
+                .ToArray()
+                ?? Array.Empty<AmbiencePreset>();
+        OnPropertyChanged(nameof(CurrentLibraryPresets));
+
+        if (clearSelection ||
+            selectedAmbiencePreset is not null && !currentLibraryPresets.Contains(selectedAmbiencePreset))
+        {
+            SelectedAmbiencePreset = null;
+            AmbiencePresetName = string.Empty;
+        }
+
+        OnPropertyChanged(nameof(CanSaveAmbiencePreset));
+        OnPropertyChanged(nameof(CanDeleteAmbiencePreset));
+        OnPropertyChanged(nameof(CanApplyAmbiencePreset));
+    }
+
+    private bool IsCurrentLibrary(string libraryRoot) =>
+        TryGetCurrentLibraryRoot(out string currentRoot) &&
+        string.Equals(currentRoot, libraryRoot, StringComparison.OrdinalIgnoreCase);
+
+    private IReadOnlyList<LibraryAmbiencePresets> UpsertAmbiencePreset(
+        string libraryRoot,
+        AmbiencePreset preset)
+    {
+        List<LibraryAmbiencePresets> groups = ambiencePresets.ToList();
+        int libraryIndex = groups.FindIndex(group => string.Equals(
+            group.LibraryRootPath,
+            libraryRoot,
+            StringComparison.OrdinalIgnoreCase));
+        if (libraryIndex < 0)
+        {
+            groups.Add(new LibraryAmbiencePresets(libraryRoot, [preset]));
+            return groups.ToArray();
+        }
+
+        LibraryAmbiencePresets group = groups[libraryIndex];
+        List<AmbiencePreset> presets = group.Presets.ToList();
+        int presetIndex = presets.FindIndex(candidate => string.Equals(
+            candidate.Name,
+            preset.Name,
+            StringComparison.OrdinalIgnoreCase));
+        if (presetIndex >= 0)
+        {
+            presets[presetIndex] = preset;
+        }
+        else
+        {
+            presets.Add(preset);
+        }
+
+        groups[libraryIndex] = new LibraryAmbiencePresets(libraryRoot, presets.ToArray());
+        return groups.ToArray();
+    }
+
+    private static IReadOnlyList<LibraryAmbiencePresets> RemoveAmbiencePreset(
+        string libraryRoot,
+        string presetName,
+        IReadOnlyList<LibraryAmbiencePresets> source)
+    {
+        List<LibraryAmbiencePresets> groups = source.ToList();
+        int libraryIndex = groups.FindIndex(group => string.Equals(
+            group.LibraryRootPath,
+            libraryRoot,
+            StringComparison.OrdinalIgnoreCase));
+        if (libraryIndex < 0)
+        {
+            return groups.ToArray();
+        }
+
+        LibraryAmbiencePresets group = groups[libraryIndex];
+        List<AmbiencePreset> presets = group.Presets
+            .Where(preset => !string.Equals(preset.Name, presetName, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        if (presets.Count == 0)
+        {
+            groups.RemoveAt(libraryIndex);
+        }
+        else
+        {
+            groups[libraryIndex] = new LibraryAmbiencePresets(libraryRoot, presets.ToArray());
+        }
+
+        return groups.ToArray();
+    }
+
+    private bool TryGetCurrentLibraryRoot(out string libraryRoot) =>
+        AmbiencePresetPath.TryNormalizeLibraryRootPath(SelectedLibraryPath, out libraryRoot);
+
+    private static string? NormalizeLibraryPathForSelection(string? path) =>
+        AmbiencePresetPath.TryNormalizeLibraryRootPath(path, out string normalizedPath)
+            ? normalizedPath
+            : path;
+
+    private static string GetAmbienceRoot(string libraryRoot) =>
+        Path.GetFullPath(Path.Combine(libraryRoot, "Ambience"));
+
+    private static bool TryGetRelativeAmbiencePath(
+        string filePath,
+        string libraryRoot,
+        string ambienceRoot,
+        out string relativePath)
+    {
+        relativePath = string.Empty;
+        try
+        {
+            string candidate = GetPathIdentity(filePath);
+            string relative = Path.GetRelativePath(ambienceRoot, candidate);
+            return AmbiencePresetPath.TryNormalizeRelativeTrackPath(
+                relative,
+                libraryRoot,
+                out relativePath);
+        }
+        catch (Exception exception) when (exception is ArgumentException or IOException or NotSupportedException)
+        {
+            return false;
+        }
+    }
+
     private void ClearLibrary()
     {
         SelectedLibraryPath = null;
@@ -919,8 +1594,28 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
     private bool HasActivePlayback =>
         CurrentTrack is not null || HasActiveAmbience;
 
+    private bool HasMusicPlayback => CurrentTrack is not null;
+
     private bool HasActiveAmbience =>
         hasPhysicalAmbience || AmbienceTracks.Any(track => track.IsActive);
+
+    private TimeSpan SelectedFadeDuration => IsFastFadeSelected
+        ? ConfiguredFastFadeDuration
+        : ConfiguredSlowFadeDuration;
+
+    private TimeSpan SelectedAutomaticFadeDuration => SelectedFadeDuration;
+
+    private void UpdateFilteredAmbienceTracks()
+    {
+        string filter = AmbienceSearchText.Trim();
+        filteredAmbienceTracks = string.IsNullOrEmpty(filter)
+            ? AmbienceTracks
+            : AmbienceTracks
+                .Where(track => track.Name.Contains(filter, StringComparison.OrdinalIgnoreCase))
+                .ToArray();
+        OnPropertyChanged(nameof(FilteredAmbienceTracks));
+        OnPropertyChanged(nameof(VisibleAmbienceTracks));
+    }
 
     private async Task SetImmediateTransitionModeCoreAsync(ImmediateTransitionMode mode)
     {
@@ -943,8 +1638,25 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         }
     }
 
+    private void ApplyTimingSettings(AppSettings settings)
+    {
+        fastFadeSeconds = settings.FastFadeSeconds;
+        mediumFadeSeconds = settings.MediumFadeSeconds;
+        slowFadeSeconds = settings.SlowFadeSeconds;
+        crossfadeStaggerSeconds = settings.CrossfadeStaggerSeconds;
+        OnPropertyChanged(nameof(ConfiguredFastFadeDuration));
+        OnPropertyChanged(nameof(ConfiguredMediumFadeDuration));
+        OnPropertyChanged(nameof(ConfiguredSlowFadeDuration));
+        OnPropertyChanged(nameof(ConfiguredCrossfadeStaggerDuration));
+        OnPropertyChanged(nameof(FadeSpeedLabel));
+        OnPropertyChanged(nameof(FadeSpeedDisplay));
+        OnPropertyChanged(nameof(MasterFadeSpeedLabel));
+    }
+
     private async Task ApplyInitialPlaybackSettingsAsync()
     {
+        TimeSpan initialMediumFadeDuration = ConfiguredMediumFadeDuration;
+        TimeSpan initialCrossfadeStaggerDuration = ConfiguredCrossfadeStaggerDuration;
         float initialMusicVolume = MusicVolume;
         float initialAmbienceVolume = AmbienceVolume;
         float initialMasterVolume = MasterVolume;
@@ -952,6 +1664,9 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         {
             Task applyTask = playbackDispatcher.Enqueue(async () =>
             {
+                await playbackController.ConfigureTimingAsync(
+                    initialMediumFadeDuration,
+                    initialCrossfadeStaggerDuration).ConfigureAwait(false);
                 await playbackController.SetMusicVolumeAsync(initialMusicVolume).ConfigureAwait(false);
                 await playbackController.SetAmbienceVolumeAsync(initialAmbienceVolume).ConfigureAwait(false);
                 await playbackController.SetMasterVolumeAsync(initialMasterVolume).ConfigureAwait(false);
@@ -1103,7 +1818,31 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         TimeSpan duration) =>
         RunPlaybackOperationAsync(
             operation,
-            () => playbackController.FadeMasterAsync(direction, duration));
+             () => playbackController.FadeMasterAsync(direction, duration));
+
+    private Task RunStopAllWithDuration(TimeSpan duration) => RunPlaybackOperationAsync(
+        PlaybackOperation.StopAll,
+        () => playbackController.StopAllAsync(duration));
+
+    private Task RunStateAwareFadeAsync(
+        PlaybackOperation operation,
+        Func<PlaybackSnapshot, MasterFadeState> stateSelector,
+        TimeSpan duration,
+        Func<MasterFadeDirection, Task> action)
+    {
+        return RunPlaybackOperationAsync(operation, async () =>
+        {
+            // Resolve the direction inside the FIFO operation. Reading the
+            // ViewModel state here would race with UI progress notifications,
+            // while the controller snapshot is synchronized with the queued
+            // operation that ran immediately before this one.
+            MasterFadeState state = stateSelector(playbackController.Snapshot);
+            MasterFadeDirection direction = state is MasterFadeState.Full or MasterFadeState.FadingIn
+                ? MasterFadeDirection.Out
+                : MasterFadeDirection.In;
+            await action(direction).ConfigureAwait(false);
+        });
+    }
 
     private Task ResolvePauseResumeAsync()
     {
@@ -1262,7 +2001,11 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         MusicVolume = snapshot.MusicVolume;
         AmbienceVolume = snapshot.AmbienceVolume;
         MasterVolume = snapshot.MasterVolume;
-        ApplyAmbienceSnapshots(snapshot.AmbienceSnapshots);
+        MusicFadeGain = snapshot.MusicFadeGain;
+        MusicFadeState = snapshot.MusicFadeState;
+        AmbienceFadeGain = snapshot.AmbienceFadeGain;
+        AmbienceFadeState = snapshot.AmbienceFadeState;
+        ApplyLogicalAmbienceSnapshots(snapshot.AmbienceSnapshots);
 
         if (playbackChanged || snapshot.CurrentPlaybackId is null)
         {
@@ -1285,14 +2028,28 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         OnPropertyChanged(nameof(CanPlayNow));
         OnPropertyChanged(nameof(CanPlayAfterCurrent));
         OnPropertyChanged(nameof(CanQueueTrack));
+        OnPropertyChanged(nameof(CanPlayTrackNow));
         OnPropertyChanged(nameof(CanPauseResume));
         OnPropertyChanged(nameof(CanSkip));
         OnPropertyChanged(nameof(CanClearQueue));
         OnPropertyChanged(nameof(CanStopAll));
+        OnPropertyChanged(nameof(CanApplyAmbiencePreset));
         NotifyFadeCommandAvailability();
     }
 
-    private void ApplyAmbienceSnapshots(IReadOnlyList<AmbiencePlaybackSnapshot> snapshots)
+    private void ApplyLogicalAmbienceSnapshots(IReadOnlyList<AmbiencePlaybackSnapshot> snapshots) =>
+        ApplyAmbienceSnapshots(
+            snapshots,
+            static (track, snapshot) => track.ApplyLogicalSnapshot(snapshot));
+
+    private void ApplyRenderedAmbienceProgress(IReadOnlyList<AmbiencePlaybackSnapshot> snapshots) =>
+        ApplyAmbienceSnapshots(
+            snapshots,
+            static (track, snapshot) => track.ApplyRenderedProgress(snapshot));
+
+    private void ApplyAmbienceSnapshots(
+        IReadOnlyList<AmbiencePlaybackSnapshot> snapshots,
+        Action<AmbienceTrackViewModel, AmbiencePlaybackSnapshot> applySnapshot)
     {
         hasPhysicalAmbience = snapshots.Count > 0;
         var snapshotsByPath = snapshots.ToDictionary(
@@ -1303,7 +2060,7 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         {
             if (snapshotsByPath.TryGetValue(GetPathIdentity(track.FilePath), out var snapshot))
             {
-                track.ApplySnapshot(snapshot);
+                applySnapshot(track, snapshot);
             }
             else
             {
@@ -1315,12 +2072,32 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         NotifyFadeCommandAvailability();
     }
 
+    private void ApplyFadeProgress(AudioProgressSnapshot progress)
+    {
+        MasterGain = progress.MasterGain;
+        MasterFadeState = progress.MasterFadeState;
+        MusicVolume = progress.MusicVolume;
+        AmbienceVolume = progress.AmbienceVolume;
+        MasterVolume = progress.MasterVolume;
+        MusicFadeGain = progress.MusicFadeGain;
+        MusicFadeState = progress.MusicFadeState;
+        AmbienceFadeGain = progress.AmbienceFadeGain;
+        AmbienceFadeState = progress.AmbienceFadeState;
+        ApplyRenderedAmbienceProgress(progress.AmbienceSnapshots);
+    }
+
     private void NotifyFadeCommandAvailability()
     {
         OnPropertyChanged(nameof(CanQuickFadeIn));
         OnPropertyChanged(nameof(CanQuickFadeOut));
         OnPropertyChanged(nameof(CanSlowFadeIn));
         OnPropertyChanged(nameof(CanSlowFadeOut));
+        OnPropertyChanged(nameof(CanFadeMusic));
+        OnPropertyChanged(nameof(CanFadeAmbience));
+        OnPropertyChanged(nameof(CanFadeMaster));
+        OnPropertyChanged(nameof(CanToggleMusicFade));
+        OnPropertyChanged(nameof(CanToggleAmbienceFade));
+        OnPropertyChanged(nameof(CanToggleMasterFade));
     }
 
     private Task SaveSettingsAsync(
@@ -1346,6 +2123,11 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
                 MusicVolume = MusicVolume,
                 AmbienceVolume = AmbienceVolume,
                 MasterVolume = MasterVolume,
+                FastFadeSeconds = fastFadeSeconds,
+                MediumFadeSeconds = mediumFadeSeconds,
+                SlowFadeSeconds = slowFadeSeconds,
+                CrossfadeStaggerSeconds = crossfadeStaggerSeconds,
+                AmbiencePresets = ambiencePresets,
             }).ConfigureAwait(false);
             await Task.Run(() => settingsService.Save(settingsToSave)).ConfigureAwait(false);
         }
@@ -1365,6 +2147,11 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         MusicVolume = MusicVolume,
         AmbienceVolume = AmbienceVolume,
         MasterVolume = MasterVolume,
+        FastFadeSeconds = fastFadeSeconds,
+        MediumFadeSeconds = mediumFadeSeconds,
+        SlowFadeSeconds = slowFadeSeconds,
+        CrossfadeStaggerSeconds = crossfadeStaggerSeconds,
+        AmbiencePresets = ambiencePresets,
     };
 
     private Task RunOnUiContextAsync(Action action)
@@ -1432,6 +2219,24 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
     private static string FormatPercent(float value) =>
         $"{Math.Clamp((int)Math.Round(NormalizeVolume(value, 0f) * 100), 0, 100)}%";
 
+    private static string FormatFadeState(MasterFadeState state) => state switch
+    {
+        MasterFadeState.FadingOut => "Fading Out",
+        MasterFadeState.Muted => "Muted",
+        MasterFadeState.FadingIn => "Fading In",
+        _ => "Full",
+    };
+
+    private static string GetFadeDirectionLabel(MasterFadeState state) =>
+        state is MasterFadeState.Full or MasterFadeState.FadingIn
+            ? "Fade Out"
+            : "Fade In";
+
+    private static string FormatDuration(TimeSpan duration) =>
+        duration.TotalSeconds == Math.Truncate(duration.TotalSeconds)
+            ? $"{duration.TotalSeconds:0}s"
+            : $"{duration.TotalSeconds:0.##}s";
+
     private static float NormalizeVolume(float value, float fallback)
     {
         if (!float.IsFinite(value))
@@ -1481,6 +2286,7 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
     private enum PlaybackOperation
     {
         PlayNow,
+        PlayNowTrack,
         AfterCurrent,
         QueueTrack,
         PauseResume,
@@ -1494,6 +2300,12 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         QuickFadeOut,
         SlowFadeIn,
         SlowFadeOut,
+        FadeMaster,
+        FadeMusic,
+        FadeAmbience,
+        SaveAmbiencePreset,
+        ApplyAmbiencePreset,
+        DeleteAmbiencePreset,
     }
 
     private enum VolumeKind

@@ -14,7 +14,10 @@ public sealed class AudioEngine : IAudioEngine
 {
     private static readonly WaveFormat MixerFormat =
         WaveFormat.CreateIeeeFloatWaveFormat(48_000, 2);
-    private static readonly TimeSpan CrossfadeDuration = TimeSpan.FromSeconds(2);
+    private static readonly TimeSpan DefaultMediumFadeDuration =
+        TimeSpan.FromSeconds(AppSettings.DefaultMediumFadeSeconds);
+    private static readonly TimeSpan DefaultCrossfadeStagger =
+        TimeSpan.FromSeconds(AppSettings.DefaultCrossfadeStaggerSeconds);
 
     private readonly Func<IWavePlayer> _outputFactory;
     private readonly Func<string, long, Action<AudioTrackSource>, AudioTrackSource> _sourceFactory;
@@ -23,7 +26,9 @@ public sealed class AudioEngine : IAudioEngine
     private readonly MixingSampleProvider _ambienceBus;
     private readonly PauseGateSampleProvider _musicPauseGate;
     private readonly GainEnvelopeSampleProvider _musicVolume;
+    private readonly GainEnvelopeSampleProvider _musicFade;
     private readonly GainEnvelopeSampleProvider _ambienceVolume;
+    private readonly GainEnvelopeSampleProvider _ambienceFade;
     private readonly GainEnvelopeSampleProvider _masterVolume;
     private readonly GainEnvelopeSampleProvider _masterEnvelope;
     private readonly IWaveProvider _waveProvider;
@@ -37,7 +42,12 @@ public sealed class AudioEngine : IAudioEngine
     private readonly Dictionary<string, AmbienceSlot> _ambienceSlots =
         new(StringComparer.OrdinalIgnoreCase);
     private MasterFadeState _masterFadeState = MasterFadeState.Full;
+    private MasterFadeState _musicFadeState = MasterFadeState.Full;
+    private MasterFadeState _ambienceFadeState = MasterFadeState.Full;
     private long _masterFadeVersion;
+    private long _musicFadeVersion;
+    private long _ambienceFadeVersion;
+    private TaskCompletionSource? _masterFadeCompletion;
     private long _playbackRunGeneration;
     private long _faultNotificationGeneration;
     private PlaybackFaultIdentity _playbackFaultIdentity = new(null, null, 0);
@@ -45,6 +55,11 @@ public sealed class AudioEngine : IAudioEngine
     private bool _paused;
     private bool _disposed;
     private long _nextAmbiencePlaybackId;
+    private TimeSpan _mediumFadeDuration = DefaultMediumFadeDuration;
+    private TimeSpan _crossfadeStagger = DefaultCrossfadeStagger;
+    private float _musicVolumeTarget = 1f;
+    private float _ambienceVolumeTarget = 1f;
+    private float _masterVolumeTarget = 1f;
 
     public AudioEngine()
 #pragma warning disable CS0618 // Milestone 3 explicitly requires one shared-mode WasapiOut.
@@ -84,10 +99,12 @@ public sealed class AudioEngine : IAudioEngine
         };
         _musicPauseGate = new PauseGateSampleProvider(_musicBus);
         _musicVolume = new GainEnvelopeSampleProvider(_musicPauseGate);
+        _musicFade = new GainEnvelopeSampleProvider(_musicVolume);
         _ambienceVolume = new GainEnvelopeSampleProvider(_ambienceBus);
+        _ambienceFade = new GainEnvelopeSampleProvider(_ambienceVolume);
         _masterVolume = new GainEnvelopeSampleProvider(_mixer);
-        _mixer.AddMixerInput(_musicVolume);
-        _mixer.AddMixerInput(_ambienceVolume);
+        _mixer.AddMixerInput(_musicFade);
+        _mixer.AddMixerInput(_ambienceFade);
         _masterEnvelope = new GainEnvelopeSampleProvider(_masterVolume);
         _waveProvider = new SampleSafetySampleProvider(_masterEnvelope).ToWaveProvider();
     }
@@ -95,6 +112,25 @@ public sealed class AudioEngine : IAudioEngine
     public event AudioTrackEndedHandler? TrackEnded;
 
     public event AudioOutputFaultedHandler? OutputFaulted;
+
+    public async Task ConfigureTimingAsync(
+        TimeSpan mediumFadeDuration,
+        TimeSpan crossfadeStaggerDuration,
+        CancellationToken cancellationToken = default)
+    {
+        ValidateTiming(mediumFadeDuration, crossfadeStaggerDuration);
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            ThrowIfDisposed();
+            _mediumFadeDuration = mediumFadeDuration;
+            _crossfadeStagger = crossfadeStaggerDuration;
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
 
     internal int MusicInputCount => _musicBus.MixerInputs.Count();
 
@@ -107,6 +143,12 @@ public sealed class AudioEngine : IAudioEngine
     internal float CurrentMusicGain => Volatile.Read(ref _currentSlot)?.Envelope.CurrentGain ?? 0f;
 
     internal float OutgoingMusicGain => Volatile.Read(ref _outgoingSlot)?.Envelope.CurrentGain ?? 0f;
+
+    internal float CurrentMusicVolumeGain => _musicVolume.CurrentGain;
+
+    internal float CurrentAmbienceVolumeGain => _ambienceVolume.CurrentGain;
+
+    internal float CurrentMasterVolumeGain => _masterVolume.CurrentGain;
 
     internal long GetAmbienceTransitionVersionForTests(string filePath)
     {
@@ -166,7 +208,7 @@ public sealed class AudioEngine : IAudioEngine
             if (_ambienceSlots.TryGetValue(identity, out var existing))
             {
                 existing.Source.Unsuppress();
-                existing.SourceGain.SetGain(sourceGain);
+                SetAmbienceSourceGainNoLock(existing, sourceGain);
                 if (existing.State == AmbiencePlaybackState.FadingOut)
                 {
                     ArmAmbienceTransitionNoLock(existing, targetGain: 1f, desiredPlaying: true);
@@ -194,7 +236,7 @@ public sealed class AudioEngine : IAudioEngine
                 throw;
             }
 
-            var sourceGainStage = new FixedGainSampleProvider(openedSource, sourceGain);
+            var sourceGainStage = new GainEnvelopeSampleProvider(openedSource, sourceGain);
             var lifecycle = new GainEnvelopeSampleProvider(sourceGainStage, 0f);
             var slot = new AmbienceSlot(identity, openedSource, sourceGainStage, lifecycle);
             _ambienceSlots.Add(identity, slot);
@@ -279,7 +321,7 @@ public sealed class AudioEngine : IAudioEngine
             ThrowIfDisposed();
             if (_ambienceSlots.TryGetValue(identity, out var slot))
             {
-                slot.SourceGain.SetGain(sourceGain);
+                SetAmbienceSourceGainNoLock(slot, sourceGain);
             }
         }
         finally
@@ -289,32 +331,66 @@ public sealed class AudioEngine : IAudioEngine
     }
 
     public Task SetMusicVolumeAsync(float volume, CancellationToken cancellationToken = default) =>
-        SetPersistentVolumeAsync(_musicVolume, volume, cancellationToken);
+        SetPersistentVolumeAsync(PersistentVolumeStage.Music, volume, cancellationToken);
 
     public Task SetAmbienceVolumeAsync(float volume, CancellationToken cancellationToken = default) =>
-        SetPersistentVolumeAsync(_ambienceVolume, volume, cancellationToken);
+        SetPersistentVolumeAsync(PersistentVolumeStage.Ambience, volume, cancellationToken);
 
     public Task SetMasterVolumeAsync(float volume, CancellationToken cancellationToken = default) =>
-        SetPersistentVolumeAsync(_masterVolume, volume, cancellationToken);
+        SetPersistentVolumeAsync(PersistentVolumeStage.Master, volume, cancellationToken);
 
     public Task FadeMasterAsync(
         MasterFadeDirection direction,
         TimeSpan fullScaleDuration,
         CancellationToken cancellationToken = default)
     {
-        if (direction is not MasterFadeDirection.In and not MasterFadeDirection.Out)
-        {
-            throw new ArgumentOutOfRangeException(nameof(direction));
-        }
-
-        if (fullScaleDuration < TimeSpan.Zero)
-        {
-            throw new ArgumentOutOfRangeException(
-                nameof(fullScaleDuration),
-                "The full-scale fade duration cannot be negative.");
-        }
+        ValidateFadeArguments(direction, fullScaleDuration);
 
         return FadeMasterCoreAsync(direction, fullScaleDuration, cancellationToken);
+    }
+
+    public Task FadeMusicAsync(
+        MasterFadeDirection direction,
+        TimeSpan fullScaleDuration,
+        CancellationToken cancellationToken = default)
+    {
+        ValidateFadeArguments(direction, fullScaleDuration);
+        return FadeBusCoreAsync(
+            _musicFade,
+            direction,
+            fullScaleDuration,
+            isMusic: true,
+            cancellationToken);
+    }
+
+    public Task FadeAmbienceAsync(
+        MasterFadeDirection direction,
+        TimeSpan fullScaleDuration,
+        CancellationToken cancellationToken = default)
+    {
+        ValidateFadeArguments(direction, fullScaleDuration);
+        return FadeBusCoreAsync(
+            _ambienceFade,
+            direction,
+            fullScaleDuration,
+            isMusic: false,
+            cancellationToken);
+    }
+
+    public Task FadeMasterAndWaitAsync(
+        MasterFadeDirection direction,
+        TimeSpan fullScaleDuration,
+        CancellationToken cancellationToken = default)
+    {
+        ValidateFadeArguments(direction, fullScaleDuration);
+        var completion = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        _ = ArmMasterFadeWithCompletionAsync(
+            direction,
+            fullScaleDuration,
+            cancellationToken,
+            completion);
+        return completion.Task;
     }
 
     public async Task PauseAsync(CancellationToken cancellationToken = default)
@@ -427,6 +503,7 @@ public sealed class AudioEngine : IAudioEngine
 
             if (_ambienceSlots.Count == 0 && _output is not null)
             {
+                CancelMasterCompletionNoLock();
                 try
                 {
                     RunOutputCommand(_output, _output.Stop);
@@ -437,6 +514,53 @@ public sealed class AudioEngine : IAudioEngine
                     QueueOutputFault("stopping playback", exception, null);
                     throw;
                 }
+            }
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    public async Task StopSourcesPreservingMasterFadeAsync(
+        CancellationToken cancellationToken = default)
+    {
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            ThrowIfDisposed();
+            if (ClearCurrentFaultedOutputNoLock())
+            {
+                return;
+            }
+
+            var playbackId = _currentSlot?.Source.PlaybackId;
+            var slots = DetachAllSlots(publishIdentity: false);
+            var ambience = DetachAllAmbienceNoLock(publishIdentity: false);
+            PublishPlaybackFaultIdentityNoLock();
+            CancelMasterCompletionNoLock();
+            Exception? stopException = null;
+
+            if (_output is not null)
+            {
+                try
+                {
+                    RunOutputCommand(_output, _output.Stop);
+                }
+                catch (Exception exception)
+                {
+                    stopException = exception;
+                    RetireOutputNoLock(_output, playbackId);
+                }
+            }
+
+            DisposeSlots(slots);
+            DisposeAmbience(ambience);
+
+            if (stopException is not null)
+            {
+                QueueOutputFault("stopping playback", stopException, playbackId);
+                throw stopException;
             }
         }
         finally
@@ -499,6 +623,7 @@ public sealed class AudioEngine : IAudioEngine
         {
             ThrowIfDisposed();
             RefreshMasterFadeStateNoLock();
+            RefreshBusFadeStatesNoLock();
             var slot = _currentSlot;
             if (slot is null)
             {
@@ -509,9 +634,13 @@ public sealed class AudioEngine : IAudioEngine
                     _masterEnvelope.CurrentGain,
                     _masterFadeState,
                     GetAmbienceSnapshotsNoLock(),
-                    _musicVolume.CurrentGain,
-                    _ambienceVolume.CurrentGain,
-                    _masterVolume.CurrentGain);
+                    _musicVolumeTarget,
+                    _ambienceVolumeTarget,
+                    _masterVolumeTarget,
+                    _musicFade.CurrentGain,
+                    _musicFadeState,
+                    _ambienceFade.CurrentGain,
+                    _ambienceFadeState);
             }
 
             return new AudioProgressSnapshot(
@@ -521,9 +650,13 @@ public sealed class AudioEngine : IAudioEngine
                 _masterEnvelope.CurrentGain,
                 _masterFadeState,
                 GetAmbienceSnapshotsNoLock(),
-                _musicVolume.CurrentGain,
-                _ambienceVolume.CurrentGain,
-                _masterVolume.CurrentGain);
+                _musicVolumeTarget,
+                _ambienceVolumeTarget,
+                _masterVolumeTarget,
+                _musicFade.CurrentGain,
+                _musicFadeState,
+                _ambienceFade.CurrentGain,
+                _ambienceFadeState);
         }
         finally
         {
@@ -546,9 +679,7 @@ public sealed class AudioEngine : IAudioEngine
             var playbackId = _currentSlot?.Source.PlaybackId;
             var slots = DetachAllSlots(publishIdentity: false);
             var ambience = DetachAllAmbienceNoLock(publishIdentity: false);
-            _masterFadeVersion++;
-            _masterEnvelope.SetGain(1f);
-            _masterFadeState = MasterFadeState.Full;
+            ResetMasterNoLock();
             var output = _output;
             _output = null;
             PublishPlaybackFaultIdentityNoLock();
@@ -630,15 +761,21 @@ public sealed class AudioEngine : IAudioEngine
                     _currentSlot is not null
                     ? 0f
                     : 1f;
-                var newSlot = new MusicSlot(
-                    openedSource,
-                    new GainEnvelopeSampleProvider(openedSource, initialGain));
+                var envelope = new GainEnvelopeSampleProvider(openedSource, initialGain);
+                ISampleProvider input = transitionMode == ImmediateTransitionMode.Crossfade &&
+                    _currentSlot is not null &&
+                    _crossfadeStagger > TimeSpan.Zero
+                    ? new SampleDelayGateSampleProvider(
+                        envelope,
+                        DurationToSamples(_crossfadeStagger, envelope.WaveFormat))
+                    : envelope;
+                var newSlot = new MusicSlot(openedSource, envelope, input);
 
                 if (transitionMode == ImmediateTransitionMode.HardCut)
                 {
                     DisposeSlots(DetachAllSlots());
                     SetCurrentSlotNoLock(newSlot);
-                    _musicBus.AddMixerInput(newSlot.Envelope);
+                    _musicBus.AddMixerInput(newSlot.Input);
                 }
                 else
                 {
@@ -689,7 +826,8 @@ public sealed class AudioEngine : IAudioEngine
     private async Task FadeMasterCoreAsync(
         MasterFadeDirection direction,
         TimeSpan fullScaleDuration,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        TaskCompletionSource? completion = null)
     {
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
@@ -700,12 +838,17 @@ public sealed class AudioEngine : IAudioEngine
             var remainingDistance = Math.Abs(targetGain - currentGain);
             var fadeVersion = ++_masterFadeVersion;
 
+            CancelMasterCompletionNoLock();
+            _masterFadeCompletion = completion;
+
             if (remainingDistance == 0f || fullScaleDuration == TimeSpan.Zero)
             {
                 _masterEnvelope.SetGain(targetGain);
                 _masterFadeState = direction == MasterFadeDirection.In
                     ? MasterFadeState.Full
                     : MasterFadeState.Muted;
+                completion?.TrySetResult();
+                _masterFadeCompletion = null;
                 return;
             }
 
@@ -719,6 +862,8 @@ public sealed class AudioEngine : IAudioEngine
                 _masterFadeState = direction == MasterFadeDirection.In
                     ? MasterFadeState.Full
                     : MasterFadeState.Muted;
+                completion?.TrySetResult();
+                _masterFadeCompletion = null;
                 return;
             }
 
@@ -737,6 +882,143 @@ public sealed class AudioEngine : IAudioEngine
         }
     }
 
+    private async Task ArmMasterFadeWithCompletionAsync(
+        MasterFadeDirection direction,
+        TimeSpan fullScaleDuration,
+        CancellationToken cancellationToken,
+        TaskCompletionSource completion)
+    {
+        try
+        {
+            await FadeMasterCoreAsync(
+                direction,
+                fullScaleDuration,
+                cancellationToken,
+                completion).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            completion.TrySetCanceled(cancellationToken);
+        }
+        catch (Exception exception)
+        {
+            completion.TrySetException(exception);
+        }
+    }
+
+    private async Task FadeBusCoreAsync(
+        GainEnvelopeSampleProvider envelope,
+        MasterFadeDirection direction,
+        TimeSpan fullScaleDuration,
+        bool isMusic,
+        CancellationToken cancellationToken)
+    {
+        ValidateFadeArguments(direction, fullScaleDuration);
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            ThrowIfDisposed();
+            var targetGain = direction == MasterFadeDirection.In ? 1f : 0f;
+            var remainingDistance = Math.Abs(targetGain - envelope.CurrentGain);
+            var fadeVersion = isMusic ? ++_musicFadeVersion : ++_ambienceFadeVersion;
+            SetBusFadeStateNoLock(isMusic, direction, remainingDistance, fullScaleDuration);
+
+            if (remainingDistance == 0f || fullScaleDuration == TimeSpan.Zero)
+            {
+                envelope.SetGain(targetGain);
+                SetBusFadeTerminalStateNoLock(isMusic, direction);
+                return;
+            }
+
+            var duration = ScaleFadeDuration(fullScaleDuration, remainingDistance);
+            if (duration == TimeSpan.Zero)
+            {
+                envelope.SetGain(targetGain);
+                SetBusFadeTerminalStateNoLock(isMusic, direction);
+                return;
+            }
+
+            envelope.RampTo(
+                targetGain,
+                duration,
+                GainRampCurve.Linear,
+                () => OnBusFadeCompleted(isMusic, fadeVersion, direction));
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    private void OnBusFadeCompleted(
+        bool isMusic,
+        long fadeVersion,
+        MasterFadeDirection direction)
+    {
+        _ = ProcessBusFadeCompletedAsync(isMusic, fadeVersion, direction);
+    }
+
+    private async Task ProcessBusFadeCompletedAsync(
+        bool isMusic,
+        long fadeVersion,
+        MasterFadeDirection direction)
+    {
+        await _gate.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            if (_disposed ||
+                (isMusic ? fadeVersion != _musicFadeVersion : fadeVersion != _ambienceFadeVersion))
+            {
+                return;
+            }
+
+            SetBusFadeTerminalStateNoLock(isMusic, direction);
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    private void SetBusFadeStateNoLock(
+        bool isMusic,
+        MasterFadeDirection direction,
+        float remainingDistance,
+        TimeSpan fullScaleDuration)
+    {
+        if (remainingDistance == 0f || fullScaleDuration == TimeSpan.Zero)
+        {
+            return;
+        }
+
+        var state = direction == MasterFadeDirection.In
+            ? MasterFadeState.FadingIn
+            : MasterFadeState.FadingOut;
+        if (isMusic)
+        {
+            _musicFadeState = state;
+        }
+        else
+        {
+            _ambienceFadeState = state;
+        }
+    }
+
+    private void SetBusFadeTerminalStateNoLock(bool isMusic, MasterFadeDirection direction)
+    {
+        var state = direction == MasterFadeDirection.In
+            ? MasterFadeState.Full
+            : MasterFadeState.Muted;
+        if (isMusic)
+        {
+            _musicFadeState = state;
+        }
+        else
+        {
+            _ambienceFadeState = state;
+        }
+    }
+
     private void ReplaceWithCrossfade(MusicSlot newSlot)
     {
         var previousCurrent = _currentSlot;
@@ -744,7 +1026,7 @@ public sealed class AudioEngine : IAudioEngine
         {
             newSlot.Envelope.SetGain(1f);
             SetCurrentSlotNoLock(newSlot);
-            _musicBus.AddMixerInput(newSlot.Envelope);
+            _musicBus.AddMixerInput(newSlot.Input);
             return;
         }
 
@@ -766,15 +1048,15 @@ public sealed class AudioEngine : IAudioEngine
 
         retired?.Source.Dispose();
         SetCurrentSlotNoLock(newSlot);
-        _musicBus.AddMixerInput(newSlot.Envelope);
+        _musicBus.AddMixerInput(newSlot.Input);
         retained.Envelope.RampTo(
             0f,
-            CrossfadeDuration,
+            ScaleFadeDuration(_mediumFadeDuration, retained.Envelope.CurrentGain),
             GainRampCurve.EqualPowerOutgoing,
             () => OnOutgoingFadeCompleted(retained));
         newSlot.Envelope.RampTo(
             1f,
-            CrossfadeDuration,
+            _mediumFadeDuration,
             GainRampCurve.EqualPowerIncoming);
     }
 
@@ -918,7 +1200,7 @@ public sealed class AudioEngine : IAudioEngine
         SetCurrentSlotNoLock(null);
         slot.Source.Suppress();
         slot.Envelope.SetGain(0f);
-        _musicBus.RemoveMixerInput(slot.Envelope);
+        _musicBus.RemoveMixerInput(slot.Input);
         return slot;
     }
 
@@ -933,7 +1215,7 @@ public sealed class AudioEngine : IAudioEngine
         Volatile.Write(ref _outgoingSlot, null);
         slot.Source.Suppress();
         slot.Envelope.SetGain(0f);
-        _musicBus.RemoveMixerInput(slot.Envelope);
+        _musicBus.RemoveMixerInput(slot.Input);
         return slot;
     }
 
@@ -951,14 +1233,14 @@ public sealed class AudioEngine : IAudioEngine
         {
             current.Source.Suppress();
             current.Envelope.SetGain(0f);
-            _musicBus.RemoveMixerInput(current.Envelope);
+            _musicBus.RemoveMixerInput(current.Input);
         }
 
         if (outgoing is not null)
         {
             outgoing.Source.Suppress();
             outgoing.Envelope.SetGain(0f);
-            _musicBus.RemoveMixerInput(outgoing.Envelope);
+            _musicBus.RemoveMixerInput(outgoing.Input);
         }
 
         if (publishIdentity)
@@ -1050,9 +1332,23 @@ public sealed class AudioEngine : IAudioEngine
     private void ResetMasterNoLock()
     {
         _masterFadeVersion++;
+        CancelMasterCompletionNoLock();
         _masterEnvelope.SetGain(1f);
         _masterEnvelope.SetPaused(false);
         _masterFadeState = MasterFadeState.Full;
+        _musicFadeVersion++;
+        _musicFade.SetGain(1f);
+        _musicFadeState = MasterFadeState.Full;
+        _ambienceFadeVersion++;
+        _ambienceFade.SetGain(1f);
+        _ambienceFadeState = MasterFadeState.Full;
+    }
+
+    private void CancelMasterCompletionNoLock()
+    {
+        var completion = _masterFadeCompletion;
+        _masterFadeCompletion = null;
+        completion?.TrySetCanceled();
     }
 
     private void ArmAmbienceTransitionNoLock(
@@ -1068,16 +1364,16 @@ public sealed class AudioEngine : IAudioEngine
         var remainingDistance = Math.Abs(targetGain - slot.Lifecycle.CurrentGain);
         slot.Lifecycle.RampTo(
             targetGain,
-            ScaleAmbienceFadeDuration(remainingDistance),
+            ScaleFadeDuration(_mediumFadeDuration, remainingDistance),
             GainRampCurve.Linear,
             () => OnAmbienceFadeCompleted(slot, transitionVersion, desiredPlaying));
     }
 
-    private static TimeSpan ScaleAmbienceFadeDuration(float remainingDistance)
+    private static TimeSpan ScaleFadeDuration(TimeSpan fullScaleDuration, float remainingDistance)
     {
         remainingDistance = Math.Clamp(remainingDistance, 0f, 1f);
         var ticks = decimal.ToInt64(decimal.Round(
-            CrossfadeDuration.Ticks * (decimal)remainingDistance,
+            fullScaleDuration.Ticks * (decimal)remainingDistance,
             0,
             MidpointRounding.AwayFromZero));
         return TimeSpan.FromTicks(ticks);
@@ -1088,6 +1384,14 @@ public sealed class AudioEngine : IAudioEngine
         _musicPauseGate.SetPaused(paused);
     }
 
+    private void SetAmbienceSourceGainNoLock(AmbienceSlot slot, float targetGain)
+    {
+        var remainingDistance = Math.Abs(targetGain - slot.SourceGain.CurrentGain);
+        slot.SourceGain.RampTo(
+            targetGain,
+            ScaleFadeDuration(_mediumFadeDuration, remainingDistance));
+    }
+
     private IReadOnlyList<AmbiencePlaybackSnapshot> GetAmbienceSnapshotsNoLock()
     {
         return _ambienceSlots.Values
@@ -1095,7 +1399,7 @@ public sealed class AudioEngine : IAudioEngine
                 slot.Identity,
                 slot.Source.GetPosition(),
                 slot.Source.Duration,
-                slot.SourceGain.Gain,
+                slot.SourceGain.CurrentGain,
                 slot.Lifecycle.CurrentGain,
                 slot.State))
             .ToArray();
@@ -1132,6 +1436,23 @@ public sealed class AudioEngine : IAudioEngine
         _masterFadeState = _masterEnvelope.CurrentGain <= 0f
             ? MasterFadeState.Muted
             : MasterFadeState.Full;
+    }
+
+    private void RefreshBusFadeStatesNoLock()
+    {
+        if (!_musicFade.IsRampActive)
+        {
+            _musicFadeState = _musicFade.CurrentGain <= 0f
+                ? MasterFadeState.Muted
+                : MasterFadeState.Full;
+        }
+
+        if (!_ambienceFade.IsRampActive)
+        {
+            _ambienceFadeState = _ambienceFade.CurrentGain <= 0f
+                ? MasterFadeState.Muted
+                : MasterFadeState.Full;
+        }
     }
 
     private void OnSourceEnded(AudioTrackSource source)
@@ -1291,6 +1612,9 @@ public sealed class AudioEngine : IAudioEngine
             _masterFadeState = direction == MasterFadeDirection.In
                 ? MasterFadeState.Full
                 : MasterFadeState.Muted;
+            var completion = _masterFadeCompletion;
+            _masterFadeCompletion = null;
+            completion?.TrySetResult();
         }
         finally
         {
@@ -1408,7 +1732,7 @@ public sealed class AudioEngine : IAudioEngine
     }
 
     private async Task SetPersistentVolumeAsync(
-        GainEnvelopeSampleProvider stage,
+        PersistentVolumeStage persistentStage,
         float volume,
         CancellationToken cancellationToken)
     {
@@ -1417,11 +1741,63 @@ public sealed class AudioEngine : IAudioEngine
         try
         {
             ThrowIfDisposed();
-            stage.SetGain(volume);
+            var stage = persistentStage switch
+            {
+                PersistentVolumeStage.Music => _musicVolume,
+                PersistentVolumeStage.Ambience => _ambienceVolume,
+                PersistentVolumeStage.Master => _masterVolume,
+                _ => throw new ArgumentOutOfRangeException(nameof(persistentStage)),
+            };
+            var currentGain = stage.CurrentGain;
+            if (ShouldRampPersistentVolumeNoLock(persistentStage))
+            {
+                stage.RampTo(
+                    volume,
+                    ScaleFadeDuration(_mediumFadeDuration, Math.Abs(volume - currentGain)));
+            }
+            else
+            {
+                stage.SetGain(volume);
+            }
+
+            SetPersistentVolumeTargetNoLock(persistentStage, volume);
         }
         finally
         {
             _gate.Release();
+        }
+    }
+
+    private bool ShouldRampPersistentVolumeNoLock(PersistentVolumeStage persistentStage) =>
+        persistentStage switch
+        {
+            PersistentVolumeStage.Music => HasUnpausedPhysicalMusicNoLock(),
+            PersistentVolumeStage.Ambience => _ambienceSlots.Count > 0,
+            PersistentVolumeStage.Master =>
+                HasUnpausedPhysicalMusicNoLock() || _ambienceSlots.Count > 0,
+            _ => throw new ArgumentOutOfRangeException(nameof(persistentStage)),
+        };
+
+    private bool HasUnpausedPhysicalMusicNoLock() =>
+        !_paused && (_currentSlot is not null || _outgoingSlot is not null);
+
+    private void SetPersistentVolumeTargetNoLock(
+        PersistentVolumeStage persistentStage,
+        float volume)
+    {
+        switch (persistentStage)
+        {
+            case PersistentVolumeStage.Music:
+                _musicVolumeTarget = volume;
+                break;
+            case PersistentVolumeStage.Ambience:
+                _ambienceVolumeTarget = volume;
+                break;
+            case PersistentVolumeStage.Master:
+                _masterVolumeTarget = volume;
+                break;
+            default:
+                throw new ArgumentOutOfRangeException(nameof(persistentStage));
         }
     }
 
@@ -1438,6 +1814,23 @@ public sealed class AudioEngine : IAudioEngine
             throw new ArgumentOutOfRangeException(
                 parameterName,
                 "Gain must be finite and between zero and one.");
+        }
+    }
+
+    private static void ValidateFadeArguments(
+        MasterFadeDirection direction,
+        TimeSpan fullScaleDuration)
+    {
+        if (direction is not MasterFadeDirection.In and not MasterFadeDirection.Out)
+        {
+            throw new ArgumentOutOfRangeException(nameof(direction));
+        }
+
+        if (fullScaleDuration < TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(fullScaleDuration),
+                "The full-scale fade duration cannot be negative.");
         }
     }
 
@@ -1588,21 +1981,66 @@ public sealed class AudioEngine : IAudioEngine
 
     private void ThrowIfDisposed() => ObjectDisposedException.ThrowIf(_disposed, this);
 
+    private static long DurationToSamples(TimeSpan duration, WaveFormat format)
+    {
+        var exactFrames = (decimal)duration.Ticks * format.SampleRate / TimeSpan.TicksPerSecond;
+        var wholeFrames = decimal.Round(exactFrames, 0, MidpointRounding.AwayFromZero);
+        var interleavedSamples = wholeFrames * format.Channels;
+        if (interleavedSamples > long.MaxValue)
+        {
+            throw new ArgumentOutOfRangeException(nameof(duration));
+        }
+
+        return decimal.ToInt64(interleavedSamples);
+    }
+
+    private static void ValidateTiming(TimeSpan mediumFadeDuration, TimeSpan crossfadeStaggerDuration)
+    {
+        if (mediumFadeDuration <= TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(mediumFadeDuration),
+                "The medium fade duration must be greater than zero.");
+        }
+
+        if (crossfadeStaggerDuration < TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(crossfadeStaggerDuration),
+                "The crossfade stagger cannot be negative.");
+        }
+
+        if (crossfadeStaggerDuration > mediumFadeDuration)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(crossfadeStaggerDuration),
+                "The crossfade stagger cannot exceed the medium fade duration.");
+        }
+    }
+
     private sealed record MusicSlot(
         AudioTrackSource Source,
-        GainEnvelopeSampleProvider Envelope);
+        GainEnvelopeSampleProvider Envelope,
+        ISampleProvider Input);
+
+    private enum PersistentVolumeStage
+    {
+        Music,
+        Ambience,
+        Master,
+    }
 
     private sealed class AmbienceSlot(
         string identity,
         AudioTrackSource source,
-        FixedGainSampleProvider sourceGain,
+        GainEnvelopeSampleProvider sourceGain,
         GainEnvelopeSampleProvider lifecycle)
     {
         internal string Identity { get; } = identity;
 
         internal AudioTrackSource Source { get; } = source;
 
-        internal FixedGainSampleProvider SourceGain { get; } = sourceGain;
+        internal GainEnvelopeSampleProvider SourceGain { get; } = sourceGain;
 
         internal GainEnvelopeSampleProvider Lifecycle { get; } = lifecycle;
 

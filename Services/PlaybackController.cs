@@ -35,7 +35,12 @@ public sealed class PlaybackController : IAsyncDisposable
     private float _musicVolume = 1f;
     private float _ambienceVolume = 1f;
     private float _masterVolume = 1f;
+    private float _musicFadeGain = 1f;
+    private MasterFadeState _musicFadeState = MasterFadeState.Full;
+    private float _ambienceFadeGain = 1f;
+    private MasterFadeState _ambienceFadeState = MasterFadeState.Full;
     private long _lastIssuedPlaybackId;
+    private bool _stopAllMuted;
     private bool _disposed;
 
     public PlaybackController(IAudioEngine audioEngine, Random? random = null)
@@ -173,6 +178,8 @@ public sealed class PlaybackController : IAsyncDisposable
         }
     }
 
+    public float MasterFadeGain => MasterGain;
+
     public float MusicVolume
     {
         get
@@ -206,6 +213,54 @@ public sealed class PlaybackController : IAsyncDisposable
         }
     }
 
+    public float MusicFadeGain
+    {
+        get
+        {
+            lock (_stateLock)
+            {
+                return _musicFadeGain;
+            }
+        }
+    }
+
+    public MasterFadeState MusicFadeState
+    {
+        get
+        {
+            lock (_stateLock)
+            {
+                return _musicFadeState;
+            }
+        }
+    }
+
+    public float MusicGain => MusicFadeGain;
+
+    public float AmbienceFadeGain
+    {
+        get
+        {
+            lock (_stateLock)
+            {
+                return _ambienceFadeGain;
+            }
+        }
+    }
+
+    public MasterFadeState AmbienceFadeState
+    {
+        get
+        {
+            lock (_stateLock)
+            {
+                return _ambienceFadeState;
+            }
+        }
+    }
+
+    public float AmbienceGain => AmbienceFadeGain;
+
     public IReadOnlyList<AmbiencePlaybackSnapshot> Ambience
     {
         get
@@ -215,6 +270,28 @@ public sealed class PlaybackController : IAsyncDisposable
                 return Array.AsReadOnly(_ambience.Values.ToArray());
             }
         }
+    }
+
+    public Task ConfigureTimingAsync(
+        TimeSpan mediumFadeDuration,
+        TimeSpan crossfadeStaggerDuration)
+    {
+        ValidateTiming(mediumFadeDuration, crossfadeStaggerDuration);
+        return ExecuteSerializedAsync(async errors =>
+        {
+            try
+            {
+                await _audioEngine.ConfigureTimingAsync(
+                    mediumFadeDuration,
+                    crossfadeStaggerDuration).ConfigureAwait(false);
+            }
+            catch (Exception exception)
+            {
+                ReportError("Could not configure audio timing.", exception, errors);
+            }
+
+            return true;
+        });
     }
 
     public PlaybackSnapshot Snapshot
@@ -238,69 +315,75 @@ public sealed class PlaybackController : IAsyncDisposable
                     Array.AsReadOnly(_ambience.Values.ToArray()),
                     _musicVolume,
                     _ambienceVolume,
-                    _masterVolume);
+                    _masterVolume,
+                    _musicFadeGain,
+                    _musicFadeState,
+                    _ambienceFadeGain,
+                    _ambienceFadeState);
             }
         }
     }
 
-    public Task PlayAmbienceAsync(LibraryTrack track, float sourceGain)
+    public Task PlayAmbienceAsync(
+        LibraryTrack track,
+        float sourceGain,
+        TimeSpan? automaticFadeDuration = null)
     {
         ArgumentNullException.ThrowIfNull(track);
         ValidateGain(sourceGain, nameof(sourceGain));
+        var fadeDuration = automaticFadeDuration ?? DefaultFastFadeDuration;
+        ValidateFadeDuration(fadeDuration, nameof(automaticFadeDuration));
         return ExecuteSerializedAsync(async errors =>
         {
             var identity = GetPathIdentity(track.FilePath);
-            AmbiencePlaybackSnapshot? previous;
+            bool wasGloballyStopped;
             lock (_stateLock)
             {
-                _ambience.TryGetValue(identity, out previous);
+                wasGloballyStopped = _currentTrack is null && _ambience.Count == 0;
             }
 
-            try
+            if (wasGloballyStopped &&
+                !await PrepareAutomaticFadeInAsync(fadeDuration, errors).ConfigureAwait(false))
             {
-                await _audioEngine.PlayAmbienceAsync(track, sourceGain).ConfigureAwait(false);
-                lock (_stateLock)
-                {
-                    _ambience[identity] = new AmbiencePlaybackSnapshot(
-                        identity,
-                        previous?.Position ?? TimeSpan.Zero,
-                        previous?.Duration ?? TimeSpan.Zero,
-                        sourceGain,
-                        previous?.LifecycleGain ?? 0f,
-                        AmbiencePlaybackState.FadingIn);
-                }
+                return true;
             }
-            catch (Exception exception)
+
+            if (await TryPlayAmbienceCoreAsync(track, sourceGain, errors).ConfigureAwait(false) &&
+                wasGloballyStopped)
             {
-                AudioProgressSnapshot? progress = null;
-                try
-                {
-                    progress = await _audioEngine.GetProgressAsync().ConfigureAwait(false);
-                }
-                catch
-                {
-                    // A source-open failure normally leaves the existing graph
-                    // intact. Without progress there is nothing safe to
-                    // reconcile here.
-                }
-
-                if (progress is not null)
-                {
-                    lock (_stateLock)
-                    {
-                        ReconcileEngineProgressNoLock(progress);
-                        if (_currentPlaybackId is long currentPlaybackId &&
-                            progress.PlaybackId != currentPlaybackId)
-                        {
-                            ClearCurrentNoLock();
-                        }
-                    }
-                }
-
-                ReportError($"Could not play ambience '{track.Name}'.", exception, errors);
+                await ArmAutomaticFadeInAsync(fadeDuration, errors).ConfigureAwait(false);
             }
 
             return true;
+        });
+    }
+
+    /// <summary>
+    /// Applies one complete ambience target set as one serialized controller
+    /// operation. Duplicate paths use the last target supplied for that path.
+    /// </summary>
+    public Task<AmbiencePresetApplicationResult> ApplyAmbiencePresetAsync(
+        IEnumerable<AmbiencePresetTarget> targets,
+        TimeSpan? automaticFadeDuration = null)
+    {
+        ArgumentNullException.ThrowIfNull(targets);
+        var normalizedTargets = NormalizeAmbiencePresetTargets(targets);
+        var fadeDuration = automaticFadeDuration ?? DefaultFastFadeDuration;
+        ValidateFadeDuration(fadeDuration, nameof(automaticFadeDuration));
+
+        return ExecuteSerializedResultAsync(async errors =>
+        {
+            var failures = new List<AmbiencePresetApplicationFailure>();
+            var succeededCount = await ApplyAmbiencePresetCoreAsync(
+                    normalizedTargets,
+                    fadeDuration,
+                    errors,
+                    failures)
+                .ConfigureAwait(false);
+
+            return (true, new AmbiencePresetApplicationResult(
+                succeededCount,
+                Array.AsReadOnly(failures.ToArray())));
         });
     }
 
@@ -371,6 +454,298 @@ public sealed class PlaybackController : IAsyncDisposable
         });
     }
 
+    private async Task<bool> TryPlayAmbienceCoreAsync(
+        LibraryTrack track,
+        float sourceGain,
+        List<PlaybackErrorEventArgs> errors,
+        Action<Exception>? onFailure = null)
+    {
+        var identity = GetPathIdentity(track.FilePath);
+        AmbiencePlaybackSnapshot? previous;
+        lock (_stateLock)
+        {
+            _ambience.TryGetValue(identity, out previous);
+        }
+
+        try
+        {
+            await _audioEngine.PlayAmbienceAsync(track, sourceGain).ConfigureAwait(false);
+            lock (_stateLock)
+            {
+                _ambience[identity] = new AmbiencePlaybackSnapshot(
+                    identity,
+                    previous?.Position ?? TimeSpan.Zero,
+                    previous?.Duration ?? TimeSpan.Zero,
+                    sourceGain,
+                    previous?.LifecycleGain ?? 0f,
+                    AmbiencePlaybackState.FadingIn);
+                _stopAllMuted = false;
+            }
+
+            return true;
+        }
+        catch (Exception exception)
+        {
+            AudioProgressSnapshot? progress = null;
+            try
+            {
+                progress = await _audioEngine.GetProgressAsync().ConfigureAwait(false);
+            }
+            catch
+            {
+                // A source-open failure normally leaves the existing graph
+                // intact. Without progress there is nothing safe to
+                // reconcile here.
+            }
+
+            if (progress is not null)
+            {
+                lock (_stateLock)
+                {
+                    ReconcileEngineProgressNoLock(progress);
+                    if (_currentPlaybackId is long currentPlaybackId &&
+                        progress.PlaybackId != currentPlaybackId)
+                    {
+                        ClearCurrentNoLock();
+                    }
+                }
+            }
+
+            ReportError($"Could not play ambience '{track.Name}'.", exception, errors);
+            onFailure?.Invoke(exception);
+            return false;
+        }
+    }
+
+    private async Task<int> ApplyAmbiencePresetCoreAsync(
+        IReadOnlyList<NormalizedAmbiencePresetTarget> targets,
+        TimeSpan automaticFadeDuration,
+        List<PlaybackErrorEventArgs> errors,
+        List<AmbiencePresetApplicationFailure> failures)
+    {
+        Dictionary<string, AmbiencePlaybackSnapshot> current;
+        bool wasGloballyStopped;
+        lock (_stateLock)
+        {
+            current = new Dictionary<string, AmbiencePlaybackSnapshot>(_ambience, PathComparer);
+            wasGloballyStopped = _currentTrack is null && _ambience.Count == 0;
+        }
+
+        var desired = targets.ToDictionary(
+            target => target.Identity,
+            target => target,
+            PathComparer);
+
+        // Stop sources that are currently on before touching shared sources or
+        // opening new sources. A source already fading out is already following
+        // the desired off transition and does not need another stop command.
+        foreach (var source in current.Values)
+        {
+            if (source.State is not (AmbiencePlaybackState.FadingIn or AmbiencePlaybackState.Playing) ||
+                desired.ContainsKey(source.FilePath))
+            {
+                continue;
+            }
+
+            await TryStopAmbienceForPresetAsync(source.FilePath, errors, failures)
+                .ConfigureAwait(false);
+        }
+
+        var newSources = targets
+            .Where(target => !current.ContainsKey(target.Identity))
+            .ToArray();
+        var succeededCount = 0;
+        foreach (var target in targets.Where(target => current.ContainsKey(target.Identity)))
+        {
+            var source = current[target.Identity];
+            if (source.State == AmbiencePlaybackState.FadingOut)
+            {
+                var reversed = await TryPlayAmbienceForPresetAsync(
+                        target,
+                        errors,
+                        failures)
+                    .ConfigureAwait(false);
+                succeededCount += reversed ? 1 : 0;
+                continue;
+            }
+
+            if (source.State is (AmbiencePlaybackState.FadingIn or AmbiencePlaybackState.Playing) &&
+                await TrySetAmbienceGainForPresetAsync(target, errors, failures)
+                    .ConfigureAwait(false))
+            {
+                succeededCount++;
+            }
+        }
+
+        var canStartNewSources = true;
+        if (wasGloballyStopped && newSources.Length > 0)
+        {
+            canStartNewSources = await PrepareAutomaticFadeInAsync(
+                    automaticFadeDuration,
+                    errors)
+                .ConfigureAwait(false);
+        }
+
+        var startedNewSource = false;
+        foreach (var target in newSources)
+        {
+            if (!canStartNewSources)
+            {
+                AddPresetFailure(
+                    failures,
+                    target.Identity,
+                    "Could not start ambience because playback fade-in preparation failed.",
+                    null);
+                continue;
+            }
+
+            if (await TryPlayAmbienceForPresetAsync(target, errors, failures)
+                    .ConfigureAwait(false))
+            {
+                succeededCount++;
+                startedNewSource = true;
+            }
+        }
+
+        // A preset may include only reversals/retargets. Those sources are
+        // already physical and must not cause an automatic master fade.
+        if (wasGloballyStopped && startedNewSource)
+        {
+            await ArmAutomaticFadeInAsync(automaticFadeDuration, errors).ConfigureAwait(false);
+        }
+
+        return succeededCount;
+    }
+
+    private async Task<bool> TryStopAmbienceForPresetAsync(
+        string identity,
+        List<PlaybackErrorEventArgs> errors,
+        List<AmbiencePresetApplicationFailure> failures)
+    {
+        try
+        {
+            await _audioEngine.StopAmbienceAsync(identity).ConfigureAwait(false);
+            lock (_stateLock)
+            {
+                if (_ambience.TryGetValue(identity, out var current))
+                {
+                    _ambience[identity] = current with
+                    {
+                        State = AmbiencePlaybackState.FadingOut,
+                    };
+                }
+            }
+
+            return true;
+        }
+        catch (Exception exception)
+        {
+            var message = $"Could not stop ambience '{identity}'.";
+            ReportError(message, exception, errors);
+            AddPresetFailure(failures, identity, message, exception);
+            return false;
+        }
+    }
+
+    private async Task<bool> TrySetAmbienceGainForPresetAsync(
+        NormalizedAmbiencePresetTarget target,
+        List<PlaybackErrorEventArgs> errors,
+        List<AmbiencePresetApplicationFailure> failures)
+    {
+        try
+        {
+            await _audioEngine.SetAmbienceSourceGainAsync(target.Identity, target.SourceGain)
+                .ConfigureAwait(false);
+            lock (_stateLock)
+            {
+                if (_ambience.TryGetValue(target.Identity, out var current))
+                {
+                    _ambience[target.Identity] = current with { SourceGain = target.SourceGain };
+                }
+            }
+
+            return true;
+        }
+        catch (Exception exception)
+        {
+            var message = $"Could not set ambience gain for '{target.Identity}'.";
+            ReportError(message, exception, errors);
+            AddPresetFailure(failures, target.Identity, message, exception);
+            return false;
+        }
+    }
+
+    private async Task<bool> TryPlayAmbienceForPresetAsync(
+        NormalizedAmbiencePresetTarget target,
+        List<PlaybackErrorEventArgs> errors,
+        List<AmbiencePresetApplicationFailure> failures)
+    {
+        var track = new LibraryTrack(GetTrackName(target.Identity), target.Identity);
+        if (await TryPlayAmbienceCoreAsync(
+                track,
+                target.SourceGain,
+                errors,
+                exception => AddPresetFailure(
+                    failures,
+                    target.Identity,
+                    $"Could not play ambience '{track.Name}'.",
+                    exception))
+            .ConfigureAwait(false))
+        {
+            return true;
+        }
+
+        return false;
+    }
+
+    private static void AddPresetFailure(
+        List<AmbiencePresetApplicationFailure> failures,
+        string identity,
+        string message,
+        Exception? exception) => failures.Add(new(identity, message, exception));
+
+    private static string GetTrackName(string identity)
+    {
+        var name = Path.GetFileNameWithoutExtension(identity);
+        return string.IsNullOrWhiteSpace(name) ? identity : name;
+    }
+
+    private static IReadOnlyList<NormalizedAmbiencePresetTarget> NormalizeAmbiencePresetTargets(
+        IEnumerable<AmbiencePresetTarget> targets)
+    {
+        var normalized = new List<NormalizedAmbiencePresetTarget>();
+        var indices = new Dictionary<string, int>(PathComparer);
+        foreach (var target in targets)
+        {
+            ArgumentNullException.ThrowIfNull(target);
+            var identity = GetPathIdentity(target.FilePath);
+            ValidateGain(target.SourceGain, nameof(target.SourceGain));
+            var normalizedTarget = new NormalizedAmbiencePresetTarget(
+                identity,
+                target.SourceGain);
+
+            // Assignment replaces the target while retaining the first path's
+            // stable position. Thus duplicates collapse case-insensitively and
+            // the last requested gain wins deterministically.
+            if (indices.TryGetValue(identity, out var index))
+            {
+                normalized[index] = normalizedTarget;
+            }
+            else
+            {
+                indices.Add(identity, normalized.Count);
+                normalized.Add(normalizedTarget);
+            }
+        }
+
+        return normalized.AsReadOnly();
+    }
+
+    private sealed record NormalizedAmbiencePresetTarget(string Identity, float SourceGain)
+    {
+        public string FilePath => Identity;
+    }
+
     public Task SetMusicVolumeAsync(float volume) => SetVolumeAsync(
         volume,
         nameof(volume),
@@ -394,25 +769,32 @@ public sealed class PlaybackController : IAsyncDisposable
 
     public Task PlayNowAsync(
         LibraryPlaylist playlist,
-        ImmediateTransitionMode transitionMode = ImmediateTransitionMode.HardCut)
+        ImmediateTransitionMode transitionMode = ImmediateTransitionMode.HardCut,
+        TimeSpan? automaticFadeDuration = null)
     {
         ArgumentNullException.ThrowIfNull(playlist);
-        if (transitionMode is not ImmediateTransitionMode.HardCut and
-            not ImmediateTransitionMode.Crossfade)
-        {
-            throw new ArgumentOutOfRangeException(nameof(transitionMode));
-        }
+        ValidateTransitionMode(transitionMode);
+        var fadeDuration = automaticFadeDuration ?? DefaultFastFadeDuration;
+        ValidateFadeDuration(fadeDuration, nameof(automaticFadeDuration));
 
         return ExecuteSerializedAsync(async errors =>
         {
             LibraryTrack? previousTrack;
             bool hadCurrentTrack;
+            bool wasGloballyStopped;
             lock (_stateLock)
             {
                 previousTrack = _currentTrack;
                 hadCurrentTrack = _currentTrack is not null;
+                wasGloballyStopped = _currentTrack is null && _ambience.Count == 0;
                 _activePlaylist = playlist;
                 _pendingPlaylist = null;
+            }
+
+            if (wasGloballyStopped &&
+                !await PrepareAutomaticFadeInAsync(fadeDuration, errors).ConfigureAwait(false))
+            {
+                return true;
             }
 
             var started = await TryPlayFromPlaylistAsync(
@@ -420,6 +802,11 @@ public sealed class PlaybackController : IAsyncDisposable
                 previousTrack,
                 transitionMode,
                 errors).ConfigureAwait(false);
+            if (started && wasGloballyStopped)
+            {
+                await ArmAutomaticFadeInAsync(fadeDuration, errors).ConfigureAwait(false);
+            }
+
             if (!started)
             {
                 if (hadCurrentTrack)
@@ -436,6 +823,74 @@ public sealed class PlaybackController : IAsyncDisposable
             return true;
         });
     }
+
+    public Task PlayNowAsync(
+        LibraryTrack track,
+        LibraryPlaylist sourcePlaylist,
+        ImmediateTransitionMode transitionMode = ImmediateTransitionMode.HardCut,
+        TimeSpan? automaticFadeDuration = null)
+    {
+        ArgumentNullException.ThrowIfNull(track);
+        ArgumentNullException.ThrowIfNull(sourcePlaylist);
+        ValidateTransitionMode(transitionMode);
+        var fadeDuration = automaticFadeDuration ?? DefaultFastFadeDuration;
+        ValidateFadeDuration(fadeDuration, nameof(automaticFadeDuration));
+
+        return ExecuteSerializedAsync(async errors =>
+        {
+            LibraryTrack? previousTrack;
+            bool hadCurrentTrack;
+            bool wasGloballyStopped;
+            lock (_stateLock)
+            {
+                previousTrack = _currentTrack;
+                hadCurrentTrack = _currentTrack is not null;
+                wasGloballyStopped = _currentTrack is null && _ambience.Count == 0;
+                _activePlaylist = sourcePlaylist;
+                _pendingPlaylist = null;
+            }
+
+            if (wasGloballyStopped &&
+                !await PrepareAutomaticFadeInAsync(fadeDuration, errors).ConfigureAwait(false))
+            {
+                return true;
+            }
+
+            var started = await TryPlayTrackAsync(
+                track,
+                sourcePlaylist,
+                transitionMode,
+                errors).ConfigureAwait(false);
+            if (started)
+            {
+                if (wasGloballyStopped)
+                {
+                    await ArmAutomaticFadeInAsync(fadeDuration, errors).ConfigureAwait(false);
+                }
+
+                return true;
+            }
+
+            if (hadCurrentTrack)
+            {
+                await TryStopMusicEngineAsync(errors).ConfigureAwait(false);
+            }
+
+            lock (_stateLock)
+            {
+                ClearCurrentNoLock();
+            }
+
+            return true;
+        });
+    }
+
+    public Task PlayNowAsync(
+        LibraryPlaylist sourcePlaylist,
+        LibraryTrack track,
+        ImmediateTransitionMode transitionMode = ImmediateTransitionMode.HardCut,
+        TimeSpan? automaticFadeDuration = null) =>
+        PlayNowAsync(track, sourcePlaylist, transitionMode, automaticFadeDuration);
 
     public Task AfterCurrentAsync(LibraryPlaylist playlist)
     {
@@ -561,18 +1016,102 @@ public sealed class PlaybackController : IAsyncDisposable
 
     public Task StopAllAsync() => ExecuteSerializedAsync(async errors =>
     {
-        lock (_stateLock)
-        {
-            ClearCurrentNoLock();
-            _pendingPlaylist = null;
-            _ambience.Clear();
-            ResetMasterNoLock();
-        }
-
-        await TryStopEngineAsync(errors).ConfigureAwait(false);
-
-        return true;
+        return await StopAllCoreAsync(DefaultFastFadeDuration, errors).ConfigureAwait(false);
     });
+
+    public Task StopAllAsync(TimeSpan fullScaleDuration)
+    {
+        ValidateFadeDuration(fullScaleDuration, nameof(fullScaleDuration));
+        return ExecuteSerializedAsync(errors => StopAllCoreAsync(fullScaleDuration, errors));
+    }
+
+    public Task FadeMusicAsync(
+        MasterFadeDirection direction,
+        TimeSpan fullScaleDuration)
+    {
+        ValidateFadeArguments(direction, fullScaleDuration);
+        return ExecuteSerializedAsync(async errors =>
+        {
+            bool hasMusic;
+            lock (_stateLock)
+            {
+                hasMusic = _currentTrack is not null;
+            }
+
+            if (!hasMusic)
+            {
+                return false;
+            }
+
+            try
+            {
+                await _audioEngine.FadeMusicAsync(direction, fullScaleDuration)
+                    .ConfigureAwait(false);
+                lock (_stateLock)
+                {
+                    UpdateFadeStateNoLock(
+                        direction,
+                        fullScaleDuration,
+                        ref _musicFadeGain,
+                        ref _musicFadeState);
+                }
+            }
+            catch (Exception exception)
+            {
+                ReportError("Could not fade music playback level.", exception, errors);
+            }
+
+            return true;
+        });
+    }
+
+    public Task FadeAmbienceAsync(
+        MasterFadeDirection direction,
+        TimeSpan fullScaleDuration)
+    {
+        ValidateFadeArguments(direction, fullScaleDuration);
+        return ExecuteSerializedAsync(async errors =>
+        {
+            bool hasAmbience;
+            lock (_stateLock)
+            {
+                hasAmbience = _ambience.Count > 0;
+            }
+
+            if (!hasAmbience)
+            {
+                return false;
+            }
+
+            try
+            {
+                await _audioEngine.FadeAmbienceAsync(direction, fullScaleDuration)
+                    .ConfigureAwait(false);
+                lock (_stateLock)
+                {
+                    UpdateFadeStateNoLock(
+                        direction,
+                        fullScaleDuration,
+                        ref _ambienceFadeGain,
+                        ref _ambienceFadeState);
+                }
+            }
+            catch (Exception exception)
+            {
+                ReportError("Could not fade ambience playback level.", exception, errors);
+            }
+
+            return true;
+        });
+    }
+
+    public Task ArmMusicFadeAsync(
+        MasterFadeDirection direction,
+        TimeSpan fullScaleDuration) => FadeMusicAsync(direction, fullScaleDuration);
+
+    public Task ArmAmbienceFadeAsync(
+        MasterFadeDirection direction,
+        TimeSpan fullScaleDuration) => FadeAmbienceAsync(direction, fullScaleDuration);
 
     public Task FadeMasterAsync(
         MasterFadeDirection direction,
@@ -670,6 +1209,10 @@ public sealed class PlaybackController : IAsyncDisposable
                     _musicVolume = progress.MusicVolume;
                     _ambienceVolume = progress.AmbienceVolume;
                     _masterVolume = progress.MasterVolume;
+                    _musicFadeGain = progress.MusicFadeGain;
+                    _musicFadeState = progress.MusicFadeState;
+                    _ambienceFadeGain = progress.AmbienceFadeGain;
+                    _ambienceFadeState = progress.AmbienceFadeState;
                     ReconcileAmbienceNoLock(progress.AmbienceSnapshots);
                 }
 
@@ -682,9 +1225,13 @@ public sealed class PlaybackController : IAsyncDisposable
                          progress.MasterGain,
                          progress.MasterFadeState,
                          progress.AmbienceSnapshots,
-                         progress.MusicVolume,
-                         progress.AmbienceVolume,
-                         progress.MasterVolume);
+                          progress.MusicVolume,
+                          progress.AmbienceVolume,
+                          progress.MasterVolume,
+                          progress.MusicFadeGain,
+                          progress.MusicFadeState,
+                          progress.AmbienceFadeGain,
+                          progress.AmbienceFadeState);
             }
             catch (Exception exception)
             {
@@ -693,6 +1240,10 @@ public sealed class PlaybackController : IAsyncDisposable
                 float musicVolume;
                 float ambienceVolume;
                 float masterVolume;
+                float musicFadeGain;
+                MasterFadeState musicFadeState;
+                float ambienceFadeGain;
+                MasterFadeState ambienceFadeState;
                 IReadOnlyList<AmbiencePlaybackSnapshot> ambience;
                 lock (_stateLock)
                 {
@@ -701,6 +1252,10 @@ public sealed class PlaybackController : IAsyncDisposable
                     musicVolume = _musicVolume;
                     ambienceVolume = _ambienceVolume;
                     masterVolume = _masterVolume;
+                    musicFadeGain = _musicFadeGain;
+                    musicFadeState = _musicFadeState;
+                    ambienceFadeGain = _ambienceFadeGain;
+                    ambienceFadeState = _ambienceFadeState;
                     ambience = _ambience.Values.ToArray();
                 }
 
@@ -714,7 +1269,11 @@ public sealed class PlaybackController : IAsyncDisposable
                     ambience,
                     musicVolume,
                     ambienceVolume,
-                    masterVolume);
+                    masterVolume,
+                    musicFadeGain,
+                    musicFadeState,
+                    ambienceFadeGain,
+                    ambienceFadeState);
             }
         }
         finally
@@ -724,6 +1283,191 @@ public sealed class PlaybackController : IAsyncDisposable
 
         RaiseNotifications(errors, errors.Count > 0);
         return result;
+    }
+
+    private async Task<bool> StopAllCoreAsync(
+        TimeSpan fullScaleDuration,
+        List<PlaybackErrorEventArgs> errors)
+    {
+        lock (_stateLock)
+        {
+            if (_currentTrack is null &&
+                _pendingPlaylist is null &&
+                _ambience.Count == 0 &&
+                _masterGain <= 0f)
+            {
+                return false;
+            }
+        }
+
+        // A fade may have advanced physically since the last UI progress poll.
+        // Read the rendered master gain before invalidating logical state so
+        // Stop All starts at the actual audible level.
+        try
+        {
+            var progress = await _audioEngine.GetProgressAsync().ConfigureAwait(false);
+            lock (_stateLock)
+            {
+                _masterGain = progress.MasterGain;
+                _masterFadeState = progress.MasterFadeState;
+            }
+        }
+        catch (Exception exception)
+        {
+            ReportError("Could not read playback level before stopping.", exception, errors);
+        }
+
+        bool hasAudibleSources;
+        bool masterAlreadyMuted;
+        lock (_stateLock)
+        {
+            hasAudibleSources = (_currentTrack is not null && _state == PlaybackState.Playing) ||
+                _ambience.Count > 0;
+            masterAlreadyMuted = _masterGain <= 0f;
+
+            // Invalidate the logical run before touching the physical graph.
+            // Completion and fault notifications that were already queued now
+            // cannot advance a playlist or resurrect a source.
+            ClearCurrentNoLock();
+            _pendingPlaylist = null;
+            _ambience.Clear();
+            _stopAllMuted = true;
+        }
+
+        if (hasAudibleSources && !masterAlreadyMuted)
+        {
+            try
+            {
+                await _audioEngine.FadeMasterAndWaitAsync(
+                    MasterFadeDirection.Out,
+                    fullScaleDuration).ConfigureAwait(false);
+                lock (_stateLock)
+                {
+                    _masterGain = 0f;
+                    _masterFadeState = MasterFadeState.Muted;
+                }
+            }
+            catch (Exception exception)
+            {
+                ReportError("Could not fade playback before stopping.", exception, errors);
+                await TryMuteMasterImmediatelyAsync(errors).ConfigureAwait(false);
+            }
+        }
+        else if (!masterAlreadyMuted)
+        {
+            try
+            {
+                // This is also the paused-only path: never resume a paused
+                // source merely to fade it out.
+                await _audioEngine.FadeMasterAsync(
+                    MasterFadeDirection.Out,
+                    TimeSpan.Zero).ConfigureAwait(false);
+            }
+            catch (Exception exception)
+            {
+                ReportError("Could not mute playback before stopping.", exception, errors);
+            }
+
+            lock (_stateLock)
+            {
+                _masterGain = 0f;
+                _masterFadeState = MasterFadeState.Muted;
+            }
+        }
+
+        try
+        {
+            await _audioEngine.StopSourcesPreservingMasterFadeAsync().ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            ReportError("Could not stop playback sources.", exception, errors);
+        }
+
+        lock (_stateLock)
+        {
+            _masterGain = 0f;
+            _masterFadeState = MasterFadeState.Muted;
+        }
+
+        return true;
+    }
+
+    private async Task<bool> PrepareAutomaticFadeInAsync(
+        TimeSpan fullScaleDuration,
+        List<PlaybackErrorEventArgs> errors)
+    {
+        try
+        {
+            // Arm the zero endpoint, but do not wait for an audio callback.
+            await _audioEngine.FadeMasterAsync(
+                MasterFadeDirection.Out,
+                TimeSpan.Zero).ConfigureAwait(false);
+            lock (_stateLock)
+            {
+                _masterGain = 0f;
+                _masterFadeState = MasterFadeState.Muted;
+            }
+
+            return true;
+        }
+        catch (Exception exception)
+        {
+            ReportError("Could not prepare playback fade-in.", exception, errors);
+            lock (_stateLock)
+            {
+                _masterGain = 0f;
+                _masterFadeState = MasterFadeState.Muted;
+            }
+
+            return false;
+        }
+    }
+
+    private async Task ArmAutomaticFadeInAsync(
+        TimeSpan fullScaleDuration,
+        List<PlaybackErrorEventArgs> errors)
+    {
+        try
+        {
+            await _audioEngine.FadeMasterAsync(
+                MasterFadeDirection.In,
+                fullScaleDuration).ConfigureAwait(false);
+            lock (_stateLock)
+            {
+                _masterFadeState = fullScaleDuration == TimeSpan.Zero
+                    ? MasterFadeState.Full
+                    : MasterFadeState.FadingIn;
+                if (fullScaleDuration == TimeSpan.Zero)
+                {
+                    _masterGain = 1f;
+                }
+            }
+        }
+        catch (Exception exception)
+        {
+            ReportError("Could not arm playback fade-in.", exception, errors);
+        }
+    }
+
+    private async Task TryMuteMasterImmediatelyAsync(List<PlaybackErrorEventArgs> errors)
+    {
+        try
+        {
+            await _audioEngine.FadeMasterAsync(
+                MasterFadeDirection.Out,
+                TimeSpan.Zero).ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            ReportError("Could not mute playback after fade failure.", exception, errors);
+        }
+
+        lock (_stateLock)
+        {
+            _masterGain = 0f;
+            _masterFadeState = MasterFadeState.Muted;
+        }
     }
 
     public async ValueTask DisposeAsync()
@@ -813,6 +1557,14 @@ public sealed class PlaybackController : IAsyncDisposable
                     return true;
                 }
 
+                if (_stopAllMuted && _currentPlaybackId is null)
+                {
+                    _ambience.Clear();
+                    _masterGain = 0f;
+                    _masterFadeState = MasterFadeState.Muted;
+                    return true;
+                }
+
                 if (progress is not null)
                 {
                     _masterGain = progress.MasterGain;
@@ -820,6 +1572,10 @@ public sealed class PlaybackController : IAsyncDisposable
                     _musicVolume = progress.MusicVolume;
                     _ambienceVolume = progress.AmbienceVolume;
                     _masterVolume = progress.MasterVolume;
+                    _musicFadeGain = progress.MusicFadeGain;
+                    _musicFadeState = progress.MusicFadeState;
+                    _ambienceFadeGain = progress.AmbienceFadeGain;
+                    _ambienceFadeState = progress.AmbienceFadeState;
                     ReconcileAmbienceNoLock(progress.AmbienceSnapshots);
 
                     if (_currentPlaybackId is null)
@@ -1002,6 +1758,7 @@ public sealed class PlaybackController : IAsyncDisposable
                     _currentPlaylist = sourcePlaylist;
                     _currentDuration = playbackInfo.Duration;
                     _state = PlaybackState.Playing;
+                    _stopAllMuted = false;
                 }
             }
 
@@ -1128,13 +1885,18 @@ public sealed class PlaybackController : IAsyncDisposable
 
         foreach (var pair in physicalByPath)
         {
-            if (_ambience.TryGetValue(pair.Key, out var logical) &&
-                logical.State == AmbiencePlaybackState.FadingOut &&
-                pair.Value.State != AmbiencePlaybackState.FadingOut)
+            if (_ambience.TryGetValue(pair.Key, out var logical))
             {
                 _ambience[pair.Key] = pair.Value with
                 {
-                    State = AmbiencePlaybackState.FadingOut,
+                    // The engine reports the gain currently rendered by the
+                    // sample envelope. Keep the requested value here so a
+                    // source that is stopped mid-ramp remembers its target.
+                    SourceGain = logical.SourceGain,
+                    State = logical.State == AmbiencePlaybackState.FadingOut ||
+                        pair.Value.State == AmbiencePlaybackState.FadingOut
+                        ? AmbiencePlaybackState.FadingOut
+                        : pair.Value.State,
                 };
             }
             else
@@ -1151,6 +1913,10 @@ public sealed class PlaybackController : IAsyncDisposable
         _musicVolume = progress.MusicVolume;
         _ambienceVolume = progress.AmbienceVolume;
         _masterVolume = progress.MasterVolume;
+        _musicFadeGain = progress.MusicFadeGain;
+        _musicFadeState = progress.MusicFadeState;
+        _ambienceFadeGain = progress.AmbienceFadeGain;
+        _ambienceFadeState = progress.AmbienceFadeState;
         ReconcileAmbienceNoLock(progress.AmbienceSnapshots);
     }
 
@@ -1181,6 +1947,10 @@ public sealed class PlaybackController : IAsyncDisposable
     {
         _masterGain = 1f;
         _masterFadeState = MasterFadeState.Full;
+        _musicFadeGain = 1f;
+        _musicFadeState = MasterFadeState.Full;
+        _ambienceFadeGain = 1f;
+        _ambienceFadeState = MasterFadeState.Full;
     }
 
     private static string GetPathIdentity(string filePath)
@@ -1197,6 +1967,84 @@ public sealed class PlaybackController : IAsyncDisposable
                 parameterName,
                 "Gain must be finite and between zero and one.");
         }
+    }
+
+    private static void ValidateTiming(TimeSpan mediumFadeDuration, TimeSpan crossfadeStaggerDuration)
+    {
+        if (mediumFadeDuration <= TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(mediumFadeDuration),
+                "The medium fade duration must be greater than zero.");
+        }
+
+        if (crossfadeStaggerDuration < TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(crossfadeStaggerDuration),
+                "The crossfade stagger cannot be negative.");
+        }
+
+        if (crossfadeStaggerDuration > mediumFadeDuration)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(crossfadeStaggerDuration),
+                "The crossfade stagger cannot exceed the medium fade duration.");
+        }
+    }
+
+    private static readonly TimeSpan DefaultFastFadeDuration =
+        TimeSpan.FromSeconds(AppSettings.DefaultFastFadeSeconds);
+
+    private static void ValidateTransitionMode(ImmediateTransitionMode transitionMode)
+    {
+        if (transitionMode is not ImmediateTransitionMode.HardCut and
+            not ImmediateTransitionMode.Crossfade)
+        {
+            throw new ArgumentOutOfRangeException(nameof(transitionMode));
+        }
+    }
+
+    private static void ValidateFadeDuration(TimeSpan duration, string parameterName)
+    {
+        if (duration < TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(
+                parameterName,
+                "The fade duration cannot be negative.");
+        }
+    }
+
+    private static void ValidateFadeArguments(
+        MasterFadeDirection direction,
+        TimeSpan fullScaleDuration)
+    {
+        if (direction is not MasterFadeDirection.In and not MasterFadeDirection.Out)
+        {
+            throw new ArgumentOutOfRangeException(nameof(direction));
+        }
+
+        ValidateFadeDuration(fullScaleDuration, nameof(fullScaleDuration));
+    }
+
+    private static void UpdateFadeStateNoLock(
+        MasterFadeDirection direction,
+        TimeSpan fullScaleDuration,
+        ref float gain,
+        ref MasterFadeState state)
+    {
+        if (fullScaleDuration == TimeSpan.Zero)
+        {
+            gain = direction == MasterFadeDirection.In ? 1f : 0f;
+            state = direction == MasterFadeDirection.In
+                ? MasterFadeState.Full
+                : MasterFadeState.Muted;
+            return;
+        }
+
+        state = direction == MasterFadeDirection.In
+            ? MasterFadeState.FadingIn
+            : MasterFadeState.FadingOut;
     }
 
     private void ReportError(
@@ -1237,6 +2085,30 @@ public sealed class PlaybackController : IAsyncDisposable
         }
 
         RaiseNotifications(errors, stateChanged);
+    }
+
+    private async Task<TResult> ExecuteSerializedResultAsync<TResult>(
+        Func<List<PlaybackErrorEventArgs>, Task<(bool StateChanged, TResult Result)>> operation)
+    {
+        var errors = new List<PlaybackErrorEventArgs>();
+        TResult result;
+        var stateChanged = false;
+
+        await _gate.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            ThrowIfDisposed();
+            var operationResult = await operation(errors).ConfigureAwait(false);
+            stateChanged = operationResult.StateChanged;
+            result = operationResult.Result;
+        }
+        finally
+        {
+            _gate.Release();
+        }
+
+        RaiseNotifications(errors, stateChanged);
+        return result;
     }
 
     private void RaiseNotifications(

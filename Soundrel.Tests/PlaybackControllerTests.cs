@@ -7,6 +7,21 @@ namespace Soundrel.Tests;
 public sealed class PlaybackControllerTests
 {
     [TestMethod]
+    public async Task ConfigureTiming_RejectsStaggerLongerThanMediumAndAcceptsEquality()
+    {
+        var engine = new FakeAudioEngine();
+        await using var controller = new PlaybackController(engine, new ZeroRandom());
+
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() =>
+            controller.ConfigureTimingAsync(TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(2.01)));
+
+        await controller.ConfigureTimingAsync(TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(2));
+        Assert.AreEqual(
+            new TimingRequest(TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(2)),
+            engine.TimingRequests.Single());
+    }
+
+    [TestMethod]
     public async Task PlayNow_ChangesActivePlaylistClearsPendingAndPreservesQueue()
     {
         var engine = new FakeAudioEngine();
@@ -251,11 +266,10 @@ public sealed class PlaybackControllerTests
 
         await controller.FadeMasterAsync(MasterFadeDirection.Out, TimeSpan.FromSeconds(4));
 
-        Assert.HasCount(1, engine.FadeRequests);
-        Assert.AreEqual(MasterFadeDirection.Out, engine.FadeRequests[0].Direction);
-        Assert.AreEqual(TimeSpan.FromSeconds(4), engine.FadeRequests[0].FullScaleDuration);
-        Assert.AreEqual(1f, controller.MasterGain);
-        Assert.AreEqual(MasterFadeState.FadingOut, controller.MasterFadeState);
+        Assert.AreEqual(MasterFadeDirection.Out, engine.FadeRequests[^1].Direction);
+        Assert.AreEqual(TimeSpan.FromSeconds(4), engine.FadeRequests[^1].FullScaleDuration);
+        Assert.AreEqual(0f, controller.MasterGain);
+        Assert.AreEqual(MasterFadeState.Muted, controller.MasterFadeState);
         Assert.AreEqual(PlaybackState.Playing, controller.State);
 
         engine.MasterGain = 0.25f;
@@ -264,9 +278,8 @@ public sealed class PlaybackControllerTests
         await controller.PauseAsync();
         await controller.FadeMasterAsync(MasterFadeDirection.In, TimeSpan.FromSeconds(6));
 
-        Assert.HasCount(2, engine.FadeRequests);
-        Assert.AreEqual(MasterFadeDirection.In, engine.FadeRequests[1].Direction);
-        Assert.AreEqual(TimeSpan.FromSeconds(6), engine.FadeRequests[1].FullScaleDuration);
+        Assert.AreEqual(MasterFadeDirection.In, engine.FadeRequests[^1].Direction);
+        Assert.AreEqual(TimeSpan.FromSeconds(6), engine.FadeRequests[^1].FullScaleDuration);
         Assert.AreEqual(0.25f, controller.MasterGain);
         Assert.AreEqual(MasterFadeState.FadingIn, controller.MasterFadeState);
         Assert.AreEqual(PlaybackState.Paused, controller.State);
@@ -299,31 +312,29 @@ public sealed class PlaybackControllerTests
         await controller.FadeMasterAsync(MasterFadeDirection.In, TimeSpan.Zero);
         Assert.AreEqual(1f, controller.MasterGain);
         Assert.AreEqual(MasterFadeState.Full, controller.MasterFadeState);
-        Assert.HasCount(2, engine.FadeRequests);
+        Assert.HasCount(4, engine.FadeRequests);
     }
 
     [TestMethod]
     public async Task FadeMaster_EngineFailureReportsErrorWithoutClearingCurrentPlayback()
     {
         var fadeException = new InvalidOperationException("fade failed");
-        var engine = new FakeAudioEngine
-        {
-            FadeException = fadeException,
-        };
+        var engine = new FakeAudioEngine();
         await using var controller = new PlaybackController(engine, new ZeroRandom());
         var playlist = Playlist("Active", "active");
         var errors = new List<PlaybackErrorEventArgs>();
         controller.ErrorOccurred += (_, error) => errors.Add(error);
         await controller.PlayNowAsync(playlist);
         var playbackId = controller.CurrentPlaybackId;
+        engine.FadeException = fadeException;
 
         await controller.FadeMasterAsync(MasterFadeDirection.Out, TimeSpan.FromSeconds(3));
 
         Assert.AreSame(playlist.Tracks[0], controller.CurrentTrack);
         Assert.AreEqual(playbackId, controller.CurrentPlaybackId);
         Assert.AreEqual(PlaybackState.Playing, controller.State);
-        Assert.AreEqual(1f, controller.MasterGain);
-        Assert.AreEqual(MasterFadeState.Full, controller.MasterFadeState);
+        Assert.AreEqual(0f, controller.MasterGain);
+        Assert.AreEqual(MasterFadeState.FadingIn, controller.MasterFadeState);
         Assert.HasCount(1, errors);
         Assert.AreSame(fadeException, errors[0].Exception);
         StringAssert.Contains(errors[0].Message, "fade master");
@@ -389,10 +400,10 @@ public sealed class PlaybackControllerTests
         Assert.IsNull(controller.CurrentPlaylist);
         Assert.IsNull(controller.CurrentPlaybackId);
         Assert.AreEqual(PlaybackState.Stopped, controller.State);
-        Assert.AreEqual(1f, controller.MasterGain);
-        Assert.AreEqual(MasterFadeState.Full, controller.MasterFadeState);
-        Assert.AreEqual(1f, controller.Snapshot.MasterGain);
-        Assert.AreEqual(MasterFadeState.Full, controller.Snapshot.MasterFadeState);
+        Assert.AreEqual(0f, controller.MasterGain);
+        Assert.AreEqual(MasterFadeState.Muted, controller.MasterFadeState);
+        Assert.AreEqual(0f, controller.Snapshot.MasterGain);
+        Assert.AreEqual(MasterFadeState.Muted, controller.Snapshot.MasterFadeState);
         Assert.HasCount(1, controller.Queue);
 
         await engine.RaiseTrackEndedAsync(stoppedId);
@@ -861,11 +872,11 @@ public sealed class PlaybackControllerTests
         {
             Duration = TimeSpan.FromSeconds(90),
             Position = TimeSpan.FromSeconds(12),
-            MasterGain = 0.4f,
-            MasterFadeState = MasterFadeState.FadingIn,
         };
         await using var controller = new PlaybackController(engine, new ZeroRandom());
         await controller.PlayNowAsync(Playlist("Active", "active"));
+        engine.MasterGain = 0.4f;
+        engine.MasterFadeState = MasterFadeState.FadingIn;
 
         var progress = await controller.GetProgressAsync();
 
@@ -1113,8 +1124,8 @@ public sealed class PlaybackControllerTests
         Assert.IsEmpty(controller.Ambience);
         Assert.AreEqual(1, engine.StopCount);
         Assert.AreEqual(0, engine.StopMusicCount);
-        Assert.AreEqual(1f, controller.MasterGain);
-        Assert.AreEqual(MasterFadeState.Full, controller.MasterFadeState);
+        Assert.AreEqual(0f, controller.MasterGain);
+        Assert.AreEqual(MasterFadeState.Muted, controller.MasterFadeState);
     }
 
     [TestMethod]
@@ -1149,6 +1160,477 @@ public sealed class PlaybackControllerTests
         Assert.IsEmpty(controller.Ambience);
         Assert.AreEqual(PlaybackState.Stopped, controller.State);
         StringAssert.Contains(controller.LastError!, "device lost");
+    }
+
+    [TestMethod]
+    public async Task ExactPlayNowUsesExplicitPlaylistAndReturnsThroughQueueToActivePlaylist()
+    {
+        var engine = new FakeAudioEngine();
+        await using var controller = new PlaybackController(engine, new ZeroRandom());
+        var active = Playlist("Active", "active-one", "active-two");
+        var exactSource = Playlist("Exact Source", "shared", "exact-two");
+        var pending = Playlist("Pending", "pending");
+        var queued = Playlist("Queued", "queued");
+
+        await controller.PlayNowAsync(active);
+        await controller.AfterCurrentAsync(pending);
+        await controller.QueueTrackAsync(queued.Tracks[0], queued);
+        await controller.PlayNowAsync(
+            exactSource.Tracks[0],
+            exactSource,
+            ImmediateTransitionMode.Crossfade,
+            TimeSpan.FromSeconds(7));
+
+        Assert.AreSame(exactSource, controller.ActivePlaylist);
+        Assert.IsNull(controller.PendingPlaylist);
+        Assert.AreSame(exactSource.Tracks[0], controller.CurrentTrack);
+        Assert.AreSame(exactSource, controller.CurrentPlaylist);
+        Assert.HasCount(1, controller.Queue);
+        Assert.AreSame(queued.Tracks[0], controller.Queue[0].Track);
+        Assert.AreEqual(ImmediateTransitionMode.Crossfade, engine.PlayRequests[^1].TransitionMode);
+
+        await CompleteCurrentAsync(controller, engine);
+        Assert.AreSame(queued.Tracks[0], controller.CurrentTrack);
+        Assert.AreSame(exactSource, controller.ActivePlaylist);
+
+        await CompleteCurrentAsync(controller, engine);
+        Assert.IsTrue(exactSource.Tracks.Contains(controller.CurrentTrack));
+        Assert.AreSame(exactSource, controller.CurrentPlaylist);
+    }
+
+    [TestMethod]
+    public async Task ExactPlayNowDoesNotInferSameNamedTrackFromAnotherPlaylist()
+    {
+        var engine = new FakeAudioEngine();
+        await using var controller = new PlaybackController(engine, new ZeroRandom());
+        var first = Playlist("First", "shared");
+        var second = Playlist("Second", "shared");
+
+        await controller.PlayNowAsync(second.Tracks[0], second);
+
+        Assert.AreSame(second.Tracks[0], controller.CurrentTrack);
+        Assert.AreSame(second, controller.CurrentPlaylist);
+        Assert.AreSame(second, controller.ActivePlaylist);
+        Assert.AreSame(second.Tracks[0], engine.PlayRequests[^1].Track);
+        Assert.AreNotSame(first.Tracks[0], engine.PlayRequests[^1].Track);
+    }
+
+    [TestMethod]
+    public async Task FailedAmbienceOpenReconcilesIndependentMusicAndAmbienceFadeState()
+    {
+        var engine = new FakeAudioEngine();
+        await using var controller = new PlaybackController(engine, new ZeroRandom());
+        var active = Playlist("Active", "active");
+        var ambience = new LibraryTrack("Rain", @"C:\Library\rain.wav");
+        var failedAmbience = new LibraryTrack("Failed", @"C:\Library\failed.wav");
+
+        await controller.PlayNowAsync(active);
+        await controller.PlayAmbienceAsync(ambience, 0.5f);
+        engine.MusicFadeGain = 0.35f;
+        engine.MusicFadeState = MasterFadeState.FadingOut;
+        engine.AmbienceFadeGain = 0.65f;
+        engine.AmbienceFadeState = MasterFadeState.FadingIn;
+        engine.PlayAmbienceException = new IOException("ambience open failed");
+
+        await controller.PlayAmbienceAsync(failedAmbience, 0.5f);
+
+        Assert.AreSame(active.Tracks[0], controller.CurrentTrack);
+        Assert.AreEqual(0.35f, controller.Snapshot.MusicFadeGain);
+        Assert.AreEqual(MasterFadeState.FadingOut, controller.Snapshot.MusicFadeState);
+        Assert.AreEqual(0.65f, controller.Snapshot.AmbienceFadeGain);
+        Assert.AreEqual(MasterFadeState.FadingIn, controller.Snapshot.AmbienceFadeState);
+    }
+
+    [TestMethod]
+    public async Task ExactPlayNowFailureClearsReplacementAndPreservesQueueAndIgnoresStaleCompletion()
+    {
+        var engine = new FakeAudioEngine();
+        await using var controller = new PlaybackController(engine, new ZeroRandom());
+        var oldPlaylist = Playlist("Old", "old");
+        var replacement = Playlist("Replacement", "replacement");
+        var queued = Playlist("Queued", "queued");
+        await controller.PlayNowAsync(oldPlaylist);
+        var oldId = controller.CurrentPlaybackId!.Value;
+        await controller.QueueTrackAsync(queued.Tracks[0], queued);
+        engine.UnreadablePaths.Add(replacement.Tracks[0].FilePath);
+
+        await controller.PlayNowAsync(
+            replacement.Tracks[0],
+            replacement,
+            ImmediateTransitionMode.HardCut);
+        await engine.RaiseTrackEndedAsync(oldId);
+
+        Assert.AreSame(replacement, controller.ActivePlaylist);
+        Assert.IsNull(controller.PendingPlaylist);
+        Assert.IsNull(controller.CurrentTrack);
+        Assert.AreEqual(PlaybackState.Stopped, controller.State);
+        Assert.HasCount(1, controller.Queue);
+        Assert.AreEqual(1, engine.StopMusicCount);
+        Assert.HasCount(2, engine.PlayRequests);
+    }
+
+    [TestMethod]
+    public async Task PlaybackStartsFromStoppedWithSelectedAutomaticMasterFade()
+    {
+        var engine = new FakeAudioEngine();
+        await using var controller = new PlaybackController(engine, new ZeroRandom());
+        var playlist = Playlist("Active", "active");
+        var duration = TimeSpan.FromSeconds(9);
+
+        await controller.PlayNowAsync(playlist, ImmediateTransitionMode.HardCut, duration);
+
+        Assert.HasCount(2, engine.FadeRequests);
+        Assert.AreEqual(MasterFadeDirection.Out, engine.FadeRequests[0].Direction);
+        Assert.AreEqual(TimeSpan.Zero, engine.FadeRequests[0].FullScaleDuration);
+        Assert.AreEqual(MasterFadeDirection.In, engine.FadeRequests[1].Direction);
+        Assert.AreEqual(duration, engine.FadeRequests[1].FullScaleDuration);
+        Assert.AreEqual(0f, controller.MasterGain);
+        Assert.AreEqual(MasterFadeState.FadingIn, controller.MasterFadeState);
+    }
+
+    [TestMethod]
+    public async Task ExactAndAmbienceStartsAlsoUseAutomaticMasterFade()
+    {
+        var exactEngine = new FakeAudioEngine();
+        await using var exactController = new PlaybackController(exactEngine, new ZeroRandom());
+        var exactPlaylist = Playlist("Exact", "exact");
+        await exactController.PlayNowAsync(
+            exactPlaylist.Tracks[0],
+            exactPlaylist,
+            ImmediateTransitionMode.HardCut,
+            TimeSpan.FromSeconds(6));
+        Assert.AreEqual(MasterFadeDirection.In, exactEngine.FadeRequests[^1].Direction);
+        Assert.AreEqual(TimeSpan.FromSeconds(6), exactEngine.FadeRequests[^1].FullScaleDuration);
+
+        var ambienceEngine = new FakeAudioEngine();
+        await using var ambienceController = new PlaybackController(ambienceEngine, new ZeroRandom());
+        await ambienceController.PlayAmbienceAsync(
+            new LibraryTrack("Rain", @"C:\Library\rain.wav"),
+            0.5f,
+            TimeSpan.FromSeconds(8));
+        Assert.AreEqual(MasterFadeDirection.Out, ambienceEngine.FadeRequests[0].Direction);
+        Assert.AreEqual(MasterFadeDirection.In, ambienceEngine.FadeRequests[^1].Direction);
+        Assert.AreEqual(TimeSpan.FromSeconds(8), ambienceEngine.FadeRequests[^1].FullScaleDuration);
+    }
+
+    [TestMethod]
+    public async Task ResumeReplacementNaturalNextAndOtherActiveSourceDoNotAutoFade()
+    {
+        var engine = new FakeAudioEngine();
+        await using var controller = new PlaybackController(engine, new ZeroRandom());
+        var first = Playlist("First", "one", "two");
+        var second = Playlist("Second", "replacement");
+        var ambience = new LibraryTrack("Rain", @"C:\Library\rain.wav");
+
+        await controller.PlayNowAsync(first);
+        var initialFadeCount = engine.FadeRequests.Count;
+        await controller.PauseAsync();
+        await controller.ResumeAsync();
+        await controller.PlayNowAsync(second, ImmediateTransitionMode.Crossfade);
+        await controller.PlayAmbienceAsync(ambience, 0.5f);
+        Assert.HasCount(initialFadeCount, engine.FadeRequests);
+
+        await engine.RaiseTrackEndedAsync(controller.CurrentPlaybackId!.Value);
+        Assert.HasCount(initialFadeCount, engine.FadeRequests);
+    }
+
+    [TestMethod]
+    public async Task StopAllWaitsForMasterFadeThenStopsAndRemainsMuted()
+    {
+        var engine = new FakeAudioEngine();
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        engine.FadeHandler = async (direction, duration) =>
+        {
+            if (direction == MasterFadeDirection.Out && duration > TimeSpan.Zero)
+            {
+                entered.SetResult();
+                await release.Task.ConfigureAwait(false);
+            }
+        };
+        await using var controller = new PlaybackController(engine, new ZeroRandom());
+        await controller.PlayNowAsync(Playlist("Active", "active"));
+        engine.MasterGain = 1f;
+        await controller.GetProgressAsync();
+
+        var stopTask = controller.StopAllAsync(TimeSpan.FromSeconds(4));
+        await entered.Task;
+        Assert.AreEqual(0, engine.StopCount);
+        Assert.IsNull(controller.CurrentTrack);
+
+        release.SetResult();
+        await stopTask;
+        Assert.AreEqual(1, engine.StopCount);
+        Assert.AreEqual(0f, controller.MasterGain);
+        Assert.AreEqual(MasterFadeState.Muted, controller.MasterFadeState);
+        Assert.AreEqual(0f, engine.MasterGain);
+    }
+
+    [TestMethod]
+    public async Task RepeatedStopAllCommandsDoNotStackOrStopTwice()
+    {
+        var engine = new FakeAudioEngine();
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        engine.FadeHandler = async (direction, duration) =>
+        {
+            if (direction == MasterFadeDirection.Out && duration > TimeSpan.Zero)
+            {
+                entered.SetResult();
+                await release.Task.ConfigureAwait(false);
+            }
+        };
+        await using var controller = new PlaybackController(engine, new ZeroRandom());
+        await controller.PlayNowAsync(Playlist("Active", "active"));
+        engine.MasterGain = 1f;
+        await controller.GetProgressAsync();
+
+        var first = controller.StopAllAsync(TimeSpan.FromSeconds(3));
+        await entered.Task;
+        var second = controller.StopAllAsync(TimeSpan.FromSeconds(3));
+        Assert.IsFalse(second.IsCompleted);
+        release.SetResult();
+        await Task.WhenAll(first, second);
+
+        Assert.AreEqual(1, engine.StopCount);
+        Assert.HasCount(1, engine.FadeRequests.Where(request =>
+            request.Direction == MasterFadeDirection.Out &&
+            request.FullScaleDuration == TimeSpan.FromSeconds(3)));
+    }
+
+    [TestMethod]
+    public async Task StopAllDropsPausedMusicImmediatelyWithoutResuming()
+    {
+        var engine = new FakeAudioEngine();
+        await using var controller = new PlaybackController(engine, new ZeroRandom());
+        await controller.PlayNowAsync(Playlist("Active", "active"));
+        await controller.PauseAsync();
+        var resumeCount = engine.ResumeCount;
+
+        await controller.StopAllAsync(TimeSpan.FromSeconds(5));
+
+        Assert.AreEqual(resumeCount, engine.ResumeCount);
+        Assert.IsNull(controller.CurrentTrack);
+        Assert.AreEqual(PlaybackState.Stopped, controller.State);
+        Assert.AreEqual(0f, controller.MasterGain);
+        Assert.AreEqual(0, engine.FadeRequests.Count(request =>
+            request.Direction == MasterFadeDirection.Out &&
+            request.FullScaleDuration == TimeSpan.FromSeconds(5)));
+        Assert.AreEqual(1, engine.StopCount);
+    }
+
+    [TestMethod]
+    public async Task StopAllFadesWhenPausedMusicAndAmbienceRemain()
+    {
+        var engine = new FakeAudioEngine();
+        await using var controller = new PlaybackController(engine, new ZeroRandom());
+        await controller.PlayNowAsync(Playlist("Active", "active"));
+        await controller.PauseAsync();
+        await controller.PlayAmbienceAsync(new LibraryTrack("Rain", @"C:\Library\rain.wav"), 0.5f);
+        engine.MasterGain = 0.75f;
+        await controller.GetProgressAsync();
+
+        await controller.StopAllAsync(TimeSpan.FromSeconds(5));
+
+        Assert.AreEqual(1, engine.FadeRequests.Count(request =>
+            request.Direction == MasterFadeDirection.Out &&
+            request.FullScaleDuration == TimeSpan.FromSeconds(5)));
+        Assert.AreEqual(0f, controller.MasterGain);
+        Assert.IsEmpty(controller.Ambience);
+        Assert.IsNull(controller.CurrentTrack);
+    }
+
+    [TestMethod]
+    public async Task StopAllFadeFailureReportsErrorStopsSourcesAndLeavesMutedState()
+    {
+        var engine = new FakeAudioEngine();
+        await using var controller = new PlaybackController(engine, new ZeroRandom());
+        var errors = new List<PlaybackErrorEventArgs>();
+        controller.ErrorOccurred += (_, error) => errors.Add(error);
+        await controller.PlayNowAsync(Playlist("Active", "active"));
+        engine.MasterGain = 1f;
+        await controller.GetProgressAsync();
+        engine.FadeException = new InvalidOperationException("fade output failed");
+
+        await controller.StopAllAsync(TimeSpan.FromSeconds(4));
+
+        Assert.IsNotEmpty(errors);
+        Assert.IsNull(controller.CurrentTrack);
+        Assert.AreEqual(PlaybackState.Stopped, controller.State);
+        Assert.AreEqual(0f, controller.MasterGain);
+        Assert.AreEqual(MasterFadeState.Muted, controller.MasterFadeState);
+        Assert.AreEqual(1, engine.StopCount);
+    }
+
+    [TestMethod]
+    public async Task MusicAndAmbienceFadeBusesRemainIndependentInSnapshot()
+    {
+        var engine = new FakeAudioEngine();
+        await using var controller = new PlaybackController(engine, new ZeroRandom());
+        await controller.PlayNowAsync(Playlist("Active", "active"));
+        await controller.FadeMusicAsync(MasterFadeDirection.Out, TimeSpan.FromSeconds(3));
+        await controller.PlayAmbienceAsync(new LibraryTrack("Rain", @"C:\Library\rain.wav"), 0.5f);
+        await controller.FadeAmbienceAsync(MasterFadeDirection.Out, TimeSpan.FromSeconds(4));
+
+        engine.MusicFadeGain = 0.4f;
+        engine.MusicFadeState = MasterFadeState.FadingOut;
+        engine.AmbienceFadeGain = 0.7f;
+        engine.AmbienceFadeState = MasterFadeState.FadingOut;
+        var snapshot = (await controller.GetProgressAsync());
+
+        Assert.AreEqual(0.4f, snapshot.MusicFadeGain);
+        Assert.AreEqual(MasterFadeState.FadingOut, snapshot.MusicFadeState);
+        Assert.AreEqual(0.7f, snapshot.AmbienceFadeGain);
+        Assert.AreEqual(MasterFadeState.FadingOut, snapshot.AmbienceFadeState);
+        Assert.AreEqual(0.4f, controller.Snapshot.MusicFadeGain);
+        Assert.AreEqual(0.7f, controller.Snapshot.AmbienceFadeGain);
+    }
+
+    [TestMethod]
+    public async Task ApplyAmbiencePreset_StopsAbsentRetargetsSharedAndStartsNewSources()
+    {
+        var engine = new FakeAudioEngine();
+        await using var controller = new PlaybackController(engine, new ZeroRandom());
+        var rain = new LibraryTrack("Rain", @"C:\Library\rain.wav");
+        var wind = new LibraryTrack("Wind", @"C:\Library\wind.wav");
+        var firePath = @"C:\Library\fire.wav";
+        await controller.PlayAmbienceAsync(rain, 0.4f);
+        await controller.PlayAmbienceAsync(wind, 0.6f);
+
+        var result = await controller.ApplyAmbiencePresetAsync([
+            new AmbiencePresetTarget(wind.FilePath, 0.25f),
+            new AmbiencePresetTarget(firePath, 0.8f),
+        ]);
+
+        Assert.IsTrue(result.Succeeded);
+        Assert.HasCount(3, engine.AmbiencePlayRequests);
+        Assert.AreEqual(Path.GetFullPath(rain.FilePath), engine.StopAmbienceRequests[^1]);
+        Assert.AreEqual(Path.GetFullPath(wind.FilePath), engine.AmbienceGainRequests[^1].FilePath);
+        Assert.AreEqual(0.25f, controller.Ambience.Single(
+            source => source.FilePath.Equals(wind.FilePath, StringComparison.OrdinalIgnoreCase)).SourceGain);
+        Assert.IsTrue(controller.Ambience.Any(
+            source => source.FilePath.Equals(firePath, StringComparison.OrdinalIgnoreCase)));
+        Assert.AreEqual(AmbiencePlaybackState.FadingOut, controller.Ambience.Single(
+            source => source.FilePath.Equals(rain.FilePath, StringComparison.OrdinalIgnoreCase)).State);
+    }
+
+    [TestMethod]
+    public async Task ApplyAmbiencePreset_EmptySetFadesEveryTargetOnSourceOut()
+    {
+        var engine = new FakeAudioEngine();
+        await using var controller = new PlaybackController(engine, new ZeroRandom());
+        var rain = new LibraryTrack("Rain", @"C:\Library\rain.wav");
+        var wind = new LibraryTrack("Wind", @"C:\Library\wind.wav");
+        await controller.PlayAmbienceAsync(rain, 0.4f);
+        await controller.PlayAmbienceAsync(wind, 0.5f);
+
+        var result = await controller.ApplyAmbiencePresetAsync(Array.Empty<AmbiencePresetTarget>());
+
+        Assert.IsTrue(result.Succeeded);
+        CollectionAssert.AreEquivalent(
+            new[] { Path.GetFullPath(rain.FilePath), Path.GetFullPath(wind.FilePath) },
+            engine.StopAmbienceRequests.ToArray());
+        Assert.IsTrue(controller.Ambience.All(source => source.State == AmbiencePlaybackState.FadingOut));
+    }
+
+    [TestMethod]
+    public async Task ApplyAmbiencePreset_ReversesFadeOutWithoutOverlappingCopy()
+    {
+        var engine = new FakeAudioEngine();
+        await using var controller = new PlaybackController(engine, new ZeroRandom());
+        var rain = new LibraryTrack("Rain", @"C:\Library\rain.wav");
+        await controller.PlayAmbienceAsync(rain, 0.4f);
+        await controller.StopAmbienceAsync(rain);
+
+        var result = await controller.ApplyAmbiencePresetAsync([
+            new AmbiencePresetTarget(rain.FilePath, 0.7f),
+        ]);
+
+        Assert.IsTrue(result.Succeeded);
+        Assert.HasCount(2, engine.AmbiencePlayRequests);
+        Assert.HasCount(1, controller.Ambience);
+        Assert.IsEmpty(engine.AmbienceGainRequests);
+        Assert.AreEqual(AmbiencePlaybackState.FadingIn, controller.Ambience[0].State);
+        Assert.AreEqual(0.7f, controller.Ambience[0].SourceGain);
+    }
+
+    [TestMethod]
+    public async Task ApplyAmbiencePreset_FromStoppedFadesMasterInOnceAndNotForExistingMusic()
+    {
+        var stoppedEngine = new FakeAudioEngine();
+        await using var stoppedController = new PlaybackController(stoppedEngine, new ZeroRandom());
+        var duration = TimeSpan.FromSeconds(8);
+        await stoppedController.ApplyAmbiencePresetAsync([
+            new AmbiencePresetTarget(@"C:\Library\rain.wav", 0.4f),
+            new AmbiencePresetTarget(@"C:\Library\wind.wav", 0.5f),
+        ], duration);
+
+        Assert.HasCount(2, stoppedEngine.FadeRequests);
+        Assert.AreEqual(MasterFadeDirection.Out, stoppedEngine.FadeRequests[0].Direction);
+        Assert.AreEqual(MasterFadeDirection.In, stoppedEngine.FadeRequests[1].Direction);
+        Assert.AreEqual(duration, stoppedEngine.FadeRequests[1].FullScaleDuration);
+
+        var activeEngine = new FakeAudioEngine();
+        await using var activeController = new PlaybackController(activeEngine, new ZeroRandom());
+        await activeController.PlayNowAsync(Playlist("Active", "active"));
+        await activeController.PauseAsync();
+        var fadeCount = activeEngine.FadeRequests.Count;
+        await activeController.ApplyAmbiencePresetAsync([
+            new AmbiencePresetTarget(@"C:\Library\rain.wav", 0.4f),
+        ], duration);
+
+        Assert.HasCount(fadeCount, activeEngine.FadeRequests);
+        Assert.AreEqual(PlaybackState.Paused, activeController.State);
+    }
+
+    [TestMethod]
+    public async Task ApplyAmbiencePreset_ValidatesAndDeduplicatesBeforeMutation()
+    {
+        var engine = new FakeAudioEngine();
+        await using var controller = new PlaybackController(engine, new ZeroRandom());
+        var path = @"C:\Library\rain.wav";
+
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() =>
+            controller.ApplyAmbiencePresetAsync([
+                new AmbiencePresetTarget(path, 0.2f),
+                new AmbiencePresetTarget(@"C:\Library\invalid.wav", float.NaN),
+            ]));
+        Assert.IsEmpty(engine.AmbiencePlayRequests);
+
+        var result = await controller.ApplyAmbiencePresetAsync([
+            new AmbiencePresetTarget(path.ToUpperInvariant(), 0.2f),
+            new AmbiencePresetTarget(path, 0.8f),
+        ]);
+
+        Assert.IsTrue(result.Succeeded);
+        Assert.HasCount(1, engine.AmbiencePlayRequests);
+        Assert.AreEqual(0.8f, engine.AmbiencePlayRequests[0].SourceGain);
+    }
+
+    [TestMethod]
+    public async Task ApplyAmbiencePreset_ContinuesAfterPerSourceFailureAndNotifiesOnce()
+    {
+        var engine = new FakeAudioEngine();
+        var missingPath = @"C:\Library\missing.wav";
+        engine.UnreadablePaths.Add(missingPath);
+        await using var controller = new PlaybackController(engine, new ZeroRandom());
+        var notificationCount = 0;
+        PlaybackSnapshot? notifiedSnapshot = null;
+        controller.StateChanged += (_, _) => notificationCount++;
+        controller.StateChanged += (_, _) => notifiedSnapshot = controller.Snapshot;
+
+        var result = await controller.ApplyAmbiencePresetAsync([
+            new AmbiencePresetTarget(missingPath, 0.2f),
+            new AmbiencePresetTarget(@"C:\Library\working.wav", 0.8f),
+        ]);
+
+        Assert.AreEqual(1, result.SucceededCount);
+        Assert.HasCount(1, result.Failures);
+        Assert.AreEqual(1, notificationCount);
+        Assert.IsNotNull(notifiedSnapshot);
+        Assert.HasCount(1, notifiedSnapshot!.AmbienceSnapshots);
+        Assert.IsTrue(controller.Ambience.Any(source =>
+            source.FilePath.Equals(@"C:\Library\working.wav", StringComparison.OrdinalIgnoreCase)));
     }
 
     private static async Task CompleteCurrentAsync(

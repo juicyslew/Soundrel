@@ -12,6 +12,10 @@ internal sealed record FadeRequest(
     MasterFadeDirection Direction,
     TimeSpan FullScaleDuration);
 
+internal sealed record TimingRequest(
+    TimeSpan MediumFadeDuration,
+    TimeSpan CrossfadeStaggerDuration);
+
 internal sealed record AmbiencePlayRequest(LibraryTrack Track, float SourceGain);
 
 internal sealed record AmbienceGainRequest(string FilePath, float SourceGain);
@@ -23,6 +27,9 @@ internal sealed class FakeAudioEngine : IAudioEngine
     private readonly object _sync = new();
     private readonly List<PlayRequest> _playRequests = [];
     private readonly List<FadeRequest> _fadeRequests = [];
+    private readonly List<FadeRequest> _musicFadeRequests = [];
+    private readonly List<FadeRequest> _ambienceFadeRequests = [];
+    private readonly List<TimingRequest> _timingRequests = [];
     private readonly List<AmbiencePlayRequest> _ambiencePlayRequests = [];
     private readonly List<string> _ambienceStopRequests = [];
     private readonly List<AmbienceGainRequest> _ambienceGainRequests = [];
@@ -57,6 +64,21 @@ internal sealed class FakeAudioEngine : IAudioEngine
                 return _fadeRequests.ToArray();
             }
         }
+    }
+
+    public IReadOnlyList<FadeRequest> MusicFadeRequests
+    {
+        get { lock (_sync) { return _musicFadeRequests.ToArray(); } }
+    }
+
+    public IReadOnlyList<FadeRequest> AmbienceFadeRequests
+    {
+        get { lock (_sync) { return _ambienceFadeRequests.ToArray(); } }
+    }
+
+    public IReadOnlyList<TimingRequest> TimingRequests
+    {
+        get { lock (_sync) { return _timingRequests.ToArray(); } }
     }
 
     public IReadOnlyList<AmbiencePlayRequest> AmbiencePlayRequests
@@ -100,6 +122,8 @@ internal sealed class FakeAudioEngine : IAudioEngine
     public Func<LibraryTrack, long, Task<AudioPlaybackInfo>>? PlayHandler { get; set; }
 
     public Func<MasterFadeDirection, TimeSpan, Task>? FadeHandler { get; set; }
+
+    public Exception? TimingException { get; set; }
 
     public Action? PauseHandler { get; set; }
 
@@ -183,7 +207,15 @@ internal sealed class FakeAudioEngine : IAudioEngine
 
     public float MasterVolume { get; set; } = 1f;
 
+    public float MusicFadeGain { get; set; } = 1f;
+
+    public float AmbienceFadeGain { get; set; } = 1f;
+
     public MasterFadeState MasterFadeState { get; set; } = MasterFadeState.Full;
+
+    public MasterFadeState MusicFadeState { get; set; } = MasterFadeState.Full;
+
+    public MasterFadeState AmbienceFadeState { get; set; } = MasterFadeState.Full;
 
     public int PauseCount { get; private set; }
 
@@ -226,6 +258,22 @@ internal sealed class FakeAudioEngine : IAudioEngine
         }
 
         return playTask;
+    }
+
+    public Task ConfigureTimingAsync(
+        TimeSpan mediumFadeDuration,
+        TimeSpan crossfadeStaggerDuration,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        lock (_sync)
+        {
+            _timingRequests.Add(new TimingRequest(mediumFadeDuration, crossfadeStaggerDuration));
+        }
+
+        return TimingException is null
+            ? Task.CompletedTask
+            : Task.FromException(TimingException);
     }
 
     public async Task FadeMasterAsync(
@@ -273,6 +321,99 @@ internal sealed class FakeAudioEngine : IAudioEngine
                 MasterFadeDirection.Out when MasterGain <= 0f => MasterFadeState.Muted,
                 _ => MasterFadeState.FadingOut,
             };
+        }
+    }
+
+    public Task FadeMusicAsync(
+        MasterFadeDirection direction,
+        TimeSpan fullScaleDuration,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (direction is not MasterFadeDirection.In and not MasterFadeDirection.Out)
+        {
+            throw new ArgumentOutOfRangeException(nameof(direction));
+        }
+
+        if (fullScaleDuration < TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(nameof(fullScaleDuration));
+        }
+
+        lock (_sync)
+        {
+            _musicFadeRequests.Add(new FadeRequest(direction, fullScaleDuration));
+        }
+
+        if (fullScaleDuration == TimeSpan.Zero)
+        {
+            MusicFadeGain = direction == MasterFadeDirection.In ? 1f : 0f;
+            MusicFadeState = MusicFadeGain == 0f
+                ? MasterFadeState.Muted
+                : MasterFadeState.Full;
+        }
+        else
+        {
+            MusicFadeState = direction == MasterFadeDirection.In
+                ? MasterFadeState.FadingIn
+                : MasterFadeState.FadingOut;
+        }
+
+        return Task.CompletedTask;
+    }
+
+    public Task FadeAmbienceAsync(
+        MasterFadeDirection direction,
+        TimeSpan fullScaleDuration,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (direction is not MasterFadeDirection.In and not MasterFadeDirection.Out)
+        {
+            throw new ArgumentOutOfRangeException(nameof(direction));
+        }
+
+        if (fullScaleDuration < TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(nameof(fullScaleDuration));
+        }
+
+        lock (_sync)
+        {
+            _ambienceFadeRequests.Add(new FadeRequest(direction, fullScaleDuration));
+        }
+
+        if (fullScaleDuration == TimeSpan.Zero)
+        {
+            AmbienceFadeGain = direction == MasterFadeDirection.In ? 1f : 0f;
+            AmbienceFadeState = AmbienceFadeGain == 0f
+                ? MasterFadeState.Muted
+                : MasterFadeState.Full;
+        }
+        else
+        {
+            AmbienceFadeState = direction == MasterFadeDirection.In
+                ? MasterFadeState.FadingIn
+                : MasterFadeState.FadingOut;
+        }
+
+        return Task.CompletedTask;
+    }
+
+    public async Task FadeMasterAndWaitAsync(
+        MasterFadeDirection direction,
+        TimeSpan fullScaleDuration,
+        CancellationToken cancellationToken = default)
+    {
+        await FadeMasterAsync(direction, fullScaleDuration, cancellationToken)
+            .ConfigureAwait(false);
+
+        lock (_sync)
+        {
+            MasterGain = direction == MasterFadeDirection.In ? 1f : 0f;
+            MasterFadeState = direction == MasterFadeDirection.In
+                ? MasterFadeState.Full
+                : MasterFadeState.Muted;
         }
     }
 
@@ -511,6 +652,25 @@ internal sealed class FakeAudioEngine : IAudioEngine
         return Task.CompletedTask;
     }
 
+    public Task StopSourcesPreservingMasterFadeAsync(CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        StopCount++;
+        lock (_sync)
+        {
+            _currentPlaybackId = null;
+            _currentDuration = TimeSpan.Zero;
+            _ambience.Clear();
+        }
+
+        if (StopException is not null)
+        {
+            return Task.FromException(StopException);
+        }
+
+        return Task.CompletedTask;
+    }
+
     public Task ResumeAsync(CancellationToken cancellationToken = default)
     {
         ResumeCount++;
@@ -559,7 +719,11 @@ internal sealed class FakeAudioEngine : IAudioEngine
                 ambience,
                 MusicVolume,
                 AmbienceVolume,
-                MasterVolume));
+                MasterVolume,
+                MusicFadeGain,
+                MusicFadeState,
+                AmbienceFadeGain,
+                AmbienceFadeState));
         }
     }
 
@@ -674,6 +838,18 @@ internal sealed class FakeAudioEngine : IAudioEngine
             if (_ambience.TryGetValue(identity, out var current))
             {
                 _ambience[identity] = current with { Position = position, LifecycleGain = lifecycleGain };
+            }
+        }
+    }
+
+    public void SetAmbienceRenderedSourceGain(string filePath, float sourceGain)
+    {
+        var identity = Path.GetFullPath(filePath);
+        lock (_sync)
+        {
+            if (_ambience.TryGetValue(identity, out var current))
+            {
+                _ambience[identity] = current with { SourceGain = sourceGain };
             }
         }
     }

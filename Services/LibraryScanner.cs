@@ -110,7 +110,7 @@ public sealed class LibraryScanner
 
         foreach (var directory in directories)
         {
-            var result = ScanMusicDirectory(directory, issues);
+            var result = ScanMusicDirectory(directory, musicPath, issues);
             if (result.Group is not null)
             {
                 groups.Add(result.Group);
@@ -124,6 +124,7 @@ public sealed class LibraryScanner
 
     private static DirectoryScanResult ScanMusicDirectory(
         string directoryPath,
+        string musicPath,
         List<LibraryScanIssue> issues)
     {
         var tracks = ScanTracks(directoryPath, issues, out var tracksRead);
@@ -141,7 +142,7 @@ public sealed class LibraryScanner
         {
             foreach (var directory in directories)
             {
-                var child = ScanMusicDirectory(directory, issues);
+                var child = ScanMusicDirectory(directory, musicPath, issues);
                 if (child.Group is not null)
                 {
                     childGroups.Add(child.Group);
@@ -160,7 +161,7 @@ public sealed class LibraryScanner
         {
             if (tracksRead && tracks.Count > 0)
             {
-                childPlaylists.Add(new LibraryPlaylist(name, directoryPath, tracks));
+                childPlaylists.Add(CreatePlaylist(name, directoryPath, musicPath, tracks));
             }
 
             SortGroups(childGroups);
@@ -175,10 +176,28 @@ public sealed class LibraryScanner
         {
             return new DirectoryScanResult(
                 null,
-                new LibraryPlaylist(name, directoryPath, tracks));
+                CreatePlaylist(name, directoryPath, musicPath, tracks));
         }
 
         return default;
+    }
+
+    private static LibraryPlaylist CreatePlaylist(
+        string name,
+        string directoryPath,
+        string musicPath,
+        IEnumerable<LibraryTrack> tracks)
+    {
+        string relativePath = Path.GetRelativePath(musicPath, directoryPath);
+        string qualifiedDisplayName = string.IsNullOrWhiteSpace(relativePath) || relativePath == "."
+            ? name
+            : string.Join(
+                " / ",
+                relativePath.Split(
+                    [Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar],
+                    StringSplitOptions.RemoveEmptyEntries));
+
+        return new LibraryPlaylist(name, directoryPath, tracks, qualifiedDisplayName);
     }
 
     private static List<LibraryTrack> ScanTracks(

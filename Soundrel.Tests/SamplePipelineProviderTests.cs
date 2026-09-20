@@ -10,6 +10,23 @@ public sealed class SamplePipelineProviderTests
     private static bool _insideRead;
 
     [TestMethod]
+    public void SampleDelayGate_DoesNotReadWrappedSourceUntilSampleDelayExpires()
+    {
+        var source = new ConstantSampleProvider(48_000, 2, 12);
+        var provider = new SampleDelayGateSampleProvider(source, 4);
+        var delayed = new float[4];
+
+        Assert.AreEqual(4, provider.Read(delayed));
+        Assert.IsTrue(delayed.All(sample => sample == 0f));
+        Assert.AreEqual(0, source.SamplesRead);
+
+        var started = new float[2];
+        Assert.AreEqual(2, provider.Read(started));
+        Assert.IsTrue(started.All(sample => sample == 1f));
+        Assert.AreEqual(2, source.SamplesRead);
+    }
+
+    [TestMethod]
     public void GainEnvelope_AppliesIdenticalGainToStereoFrameAcrossSplitReads()
     {
         var source = new ConstantSampleProvider(1_000, 2, 8);

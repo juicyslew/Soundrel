@@ -2,6 +2,53 @@ using NAudio.Wave;
 
 namespace Soundrel.Services;
 
+internal sealed class SampleDelayGateSampleProvider : ISampleProvider
+{
+    private readonly ISampleProvider _source;
+    private long _remainingSamples;
+
+    internal SampleDelayGateSampleProvider(ISampleProvider source, long delaySamples)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        if (delaySamples < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(delaySamples));
+        }
+
+        _source = source;
+        _remainingSamples = delaySamples;
+    }
+
+    public WaveFormat WaveFormat => _source.WaveFormat;
+
+    internal long RemainingSamples => Interlocked.Read(ref _remainingSamples);
+
+    public int Read(Span<float> buffer)
+    {
+        var remaining = Interlocked.Read(ref _remainingSamples);
+        if (remaining == 0)
+        {
+            return _source.Read(buffer);
+        }
+
+        var delayedSamples = (int)Math.Min(remaining, buffer.Length);
+        buffer[..delayedSamples].Clear();
+        Interlocked.Add(ref _remainingSamples, -delayedSamples);
+        if (delayedSamples == buffer.Length)
+        {
+            return buffer.Length;
+        }
+
+        var sourceRead = _source.Read(buffer[delayedSamples..]);
+        if ((uint)sourceRead > (uint)(buffer.Length - delayedSamples))
+        {
+            throw new InvalidOperationException("The source returned an invalid sample count.");
+        }
+
+        return delayedSamples + sourceRead;
+    }
+}
+
 internal sealed class PauseGateSampleProvider : ISampleProvider
 {
     private readonly ISampleProvider _source;
@@ -358,74 +405,6 @@ internal sealed class GainEnvelopeSampleProvider : ISampleProvider
         }
 
         completed?.Invoke();
-    }
-}
-
-internal sealed class FixedGainSampleProvider : ISampleProvider
-{
-    private readonly ISampleProvider _source;
-    private readonly object _gate = new();
-    private float _gain;
-
-    internal FixedGainSampleProvider(ISampleProvider source, float initialGain = 1f)
-    {
-        ArgumentNullException.ThrowIfNull(source);
-        _source = source;
-        _gain = ValidateGain(initialGain);
-    }
-
-    public WaveFormat WaveFormat => _source.WaveFormat;
-
-    internal float Gain
-    {
-        get
-        {
-            lock (_gate)
-            {
-                return _gain;
-            }
-        }
-    }
-
-    internal void SetGain(float gain)
-    {
-        gain = ValidateGain(gain);
-        lock (_gate)
-        {
-            _gain = gain;
-        }
-    }
-
-    public int Read(Span<float> buffer)
-    {
-        int samplesRead;
-        float gain;
-        lock (_gate)
-        {
-            gain = _gain;
-            samplesRead = _source.Read(buffer);
-            if ((uint)samplesRead > (uint)buffer.Length)
-            {
-                throw new InvalidOperationException("The source returned an invalid sample count.");
-            }
-
-            for (var index = 0; index < samplesRead; index++)
-            {
-                buffer[index] *= gain;
-            }
-        }
-
-        return samplesRead;
-    }
-
-    private static float ValidateGain(float gain)
-    {
-        if (!float.IsFinite(gain) || gain is < 0f or > 1f)
-        {
-            throw new ArgumentOutOfRangeException(nameof(gain), "Gain must be finite and between zero and one.");
-        }
-
-        return gain;
     }
 }
 

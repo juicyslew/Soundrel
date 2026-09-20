@@ -153,11 +153,7 @@ public sealed class MainViewModelTests
             Assert.AreEqual(mode, viewModel.PreferredImmediateTransitionMode);
             Assert.AreEqual(mode == ImmediateTransitionMode.HardCut, viewModel.IsHardCutSelected);
             Assert.AreEqual(mode == ImmediateTransitionMode.Crossfade, viewModel.IsCrossfadeSelected);
-            Assert.AreEqual(
-                mode == ImmediateTransitionMode.HardCut
-                    ? "Play Now (Hard Cut)"
-                    : "Play Now (Crossfade)",
-                viewModel.PlayNowLabel);
+            Assert.AreEqual("Play Now", viewModel.PlayNowLabel);
         }
         finally
         {
@@ -199,6 +195,239 @@ public sealed class MainViewModelTests
     }
 
     [TestMethod]
+    public async Task InitializeAsync_PersistsLegacyV3AsCurrentSettingsWithTimingKeys()
+    {
+        string libraryPath = workspace.CreateDirectory("LegacyLibrary");
+        workspace.CreateFileWithContents(
+            $$"""
+            {
+              "version": 3,
+              "selectedLibraryPath": {{JsonSerializer.Serialize(libraryPath)}},
+              "preferredImmediateTransitionMode": "Crossfade",
+              "musicVolume": 0.2,
+              "ambienceVolume": 0.4,
+              "masterVolume": 0.6
+            }
+            """,
+            "settings.json");
+        SettingsService settings = workspace.CreateSettingsService();
+        var viewModel = new MainViewModel(new LibraryScanner(), settings);
+
+        try
+        {
+            await viewModel.InitializeAsync();
+
+            using JsonDocument document = JsonDocument.Parse(File.ReadAllText(settings.SettingsPath));
+            JsonElement root = document.RootElement;
+            Assert.AreEqual(AppSettings.CurrentVersion, root.GetProperty("version").GetInt32());
+            Assert.AreEqual(libraryPath, root.GetProperty("selectedLibraryPath").GetString());
+            Assert.AreEqual("Crossfade", root.GetProperty("preferredImmediateTransitionMode").GetString());
+            Assert.AreEqual(0.2f, root.GetProperty("musicVolume").GetSingle());
+            Assert.AreEqual(0.4f, root.GetProperty("ambienceVolume").GetSingle());
+            Assert.AreEqual(0.6f, root.GetProperty("masterVolume").GetSingle());
+            Assert.AreEqual(AppSettings.DefaultFastFadeSeconds, root.GetProperty("fastFadeSeconds").GetSingle());
+            Assert.AreEqual(AppSettings.DefaultMediumFadeSeconds, root.GetProperty("mediumFadeSeconds").GetSingle());
+            Assert.AreEqual(AppSettings.DefaultSlowFadeSeconds, root.GetProperty("slowFadeSeconds").GetSingle());
+            Assert.AreEqual(
+                AppSettings.DefaultCrossfadeStaggerSeconds,
+                root.GetProperty("crossfadeStaggerSeconds").GetSingle());
+        }
+        finally
+        {
+            await viewModel.DisposeAsync();
+        }
+    }
+
+    [TestMethod]
+    public async Task InitializeAsync_DoesNotRewriteValidCurrentSettings()
+    {
+        string libraryPath = workspace.CreateDirectory("CurrentLibrary");
+        string originalJson = $$"""
+        {
+          "version": 5,
+          "selectedLibraryPath": {{JsonSerializer.Serialize(libraryPath)}},
+          "preferredImmediateTransitionMode": "Crossfade",
+          "musicVolume": 0.25,
+          "ambienceVolume": 0.5,
+          "masterVolume": 0.75,
+          "fastFadeSeconds": 0.25,
+          "mediumFadeSeconds": 3.5,
+          "slowFadeSeconds": 12.75,
+          "crossfadeStaggerSeconds": 1.25
+        }
+        """;
+        SettingsService settings = workspace.CreateSettingsService();
+        workspace.CreateFileWithContents(originalJson, "settings.json");
+        var viewModel = new MainViewModel(new LibraryScanner(), settings);
+
+        try
+        {
+            await viewModel.InitializeAsync();
+
+            Assert.AreEqual(originalJson, File.ReadAllText(settings.SettingsPath));
+        }
+        finally
+        {
+            await viewModel.DisposeAsync();
+        }
+    }
+
+    [TestMethod]
+    public async Task InitializeAsync_ExposesPersistedTimingDurations()
+    {
+        SettingsService settings = workspace.CreateSettingsService();
+        settings.Save(new AppSettings
+        {
+            FastFadeSeconds = 0.25f,
+            MediumFadeSeconds = 3.5f,
+            SlowFadeSeconds = 12.75f,
+            CrossfadeStaggerSeconds = 1.25f,
+        });
+        var viewModel = new MainViewModel(new LibraryScanner(), settings);
+
+        try
+        {
+            await viewModel.InitializeAsync();
+
+            Assert.AreEqual(TimeSpan.FromSeconds(0.25), viewModel.ConfiguredFastFadeDuration);
+            Assert.AreEqual(TimeSpan.FromSeconds(3.5), viewModel.ConfiguredMediumFadeDuration);
+            Assert.AreEqual(TimeSpan.FromSeconds(12.75), viewModel.ConfiguredSlowFadeDuration);
+            Assert.AreEqual(TimeSpan.FromSeconds(1.25), viewModel.ConfiguredCrossfadeStaggerDuration);
+        }
+        finally
+        {
+            await viewModel.DisposeAsync();
+        }
+    }
+
+    [TestMethod]
+    public async Task AmbienceSearchFiltersCaseInsensitivelyAndPreservesRowsAcrossRescan()
+    {
+        string libraryPath = workspace.CreateDirectory("AmbienceLibrary");
+        workspace.CreateFile("AmbienceLibrary", "Ambience", "Rain.mp3");
+        workspace.CreateFile("AmbienceLibrary", "Ambience", "Forest.wav");
+        workspace.CreateFile("AmbienceLibrary", "Ambience", "Rainforest.mp3");
+        var viewModel = workspace.CreateViewModel();
+        var changedProperties = new List<string?>();
+        viewModel.PropertyChanged += (_, args) => changedProperties.Add(args.PropertyName);
+
+        try
+        {
+            await viewModel.SelectLibraryAsync(libraryPath);
+            AmbienceTrackViewModel[] originalRows = viewModel.AmbienceTracks.ToArray();
+            viewModel.AmbienceSearchText = "RAIN";
+
+            CollectionAssert.AreEqual(
+                new[] { "Rain", "Rainforest" },
+                viewModel.FilteredAmbienceTracks.Select(track => track.Name).ToArray());
+            CollectionAssert.Contains(changedProperties, nameof(MainViewModel.AmbienceSearchText));
+            CollectionAssert.Contains(changedProperties, nameof(MainViewModel.FilteredAmbienceTracks));
+            CollectionAssert.Contains(changedProperties, nameof(MainViewModel.VisibleAmbienceTracks));
+
+            viewModel.AmbienceSearchText = "forest";
+            Assert.AreSame(
+                originalRows.Single(track => track.Name == "Forest"),
+                viewModel.FilteredAmbienceTracks.Single(track => track.Name == "Forest"));
+
+            await viewModel.RescanAsync();
+
+            foreach (AmbienceTrackViewModel original in originalRows)
+            {
+                Assert.AreSame(
+                    original,
+                    viewModel.AmbienceTracks.Single(track =>
+                        string.Equals(track.FilePath, original.FilePath, StringComparison.OrdinalIgnoreCase)));
+            }
+        }
+        finally
+        {
+            await viewModel.DisposeAsync();
+        }
+    }
+
+    [TestMethod]
+    public async Task RuntimeFadeSpeedDefaultsFastAndIsNotPersisted()
+    {
+        SettingsService settings = workspace.CreateSettingsService();
+        var viewModel = new MainViewModel(new LibraryScanner(), settings);
+
+        try
+        {
+            Assert.IsTrue(viewModel.IsFastFadeSelected);
+            viewModel.ToggleFadeSpeed();
+            Assert.IsTrue(viewModel.IsSlowFadeSelected);
+
+            await viewModel.SetImmediateTransitionModeAsync(ImmediateTransitionMode.Crossfade);
+
+            using JsonDocument document = JsonDocument.Parse(File.ReadAllText(settings.SettingsPath));
+            Assert.IsFalse(document.RootElement.TryGetProperty("isFastFadeSelected", out _));
+            Assert.IsFalse(document.RootElement.TryGetProperty("fadeSpeed", out _));
+        }
+        finally
+        {
+            await viewModel.DisposeAsync();
+        }
+    }
+
+    [TestMethod]
+    public async Task ToggleTransitionModePersistsModeAndKeepsPlayNowLabelStable()
+    {
+        SettingsService settings = workspace.CreateSettingsService();
+        var viewModel = new MainViewModel(new LibraryScanner(), settings);
+
+        try
+        {
+            Assert.AreEqual("Play Now", viewModel.PlayNowLabel);
+            await viewModel.ToggleImmediateTransitionModeAsync();
+
+            Assert.AreEqual(ImmediateTransitionMode.Crossfade, viewModel.PreferredImmediateTransitionMode);
+            Assert.AreEqual("Play Now", viewModel.PlayNowLabel);
+            Assert.AreEqual(
+                ImmediateTransitionMode.Crossfade,
+                settings.Load().Settings.PreferredImmediateTransitionMode);
+        }
+        finally
+        {
+            await viewModel.DisposeAsync();
+        }
+    }
+
+    [TestMethod]
+    public async Task FadeAvailabilityAliasesAndSpeedLabelRaisePropertyNotifications()
+    {
+        SettingsService settings = workspace.CreateSettingsService();
+        settings.Save(new AppSettings { FastFadeSeconds = 0.25f, SlowFadeSeconds = 12.5f });
+        var viewModel = new MainViewModel(new LibraryScanner(), settings);
+        var changedProperties = new List<string?>();
+        viewModel.PropertyChanged += (_, args) => changedProperties.Add(args.PropertyName);
+
+        try
+        {
+            await viewModel.InitializeAsync();
+            CollectionAssert.Contains(changedProperties, nameof(MainViewModel.MasterFadeSpeedLabel));
+
+            changedProperties.Clear();
+            viewModel.ToggleFadeSpeed();
+            CollectionAssert.Contains(changedProperties, nameof(MainViewModel.MasterFadeSpeedLabel));
+
+            string libraryPath = workspace.CreateDirectory("NotificationLibrary");
+            workspace.CreateFile("NotificationLibrary", "Music", "Active", "active.mp3");
+            await viewModel.SelectLibraryAsync(libraryPath);
+            changedProperties.Clear();
+            viewModel.SelectNode(viewModel.LibraryNodes.Single());
+            await Task.Yield();
+
+            CollectionAssert.Contains(changedProperties, nameof(MainViewModel.CanToggleMusicFade));
+            CollectionAssert.Contains(changedProperties, nameof(MainViewModel.CanToggleAmbienceFade));
+            CollectionAssert.Contains(changedProperties, nameof(MainViewModel.CanToggleMasterFade));
+        }
+        finally
+        {
+            await viewModel.DisposeAsync();
+        }
+    }
+
+    [TestMethod]
     public async Task PathAndModeSavesPreserveAllVolumeLevels()
     {
         string libraryPath = workspace.CreateDirectory("LevelLibrary");
@@ -227,6 +456,38 @@ public sealed class MainViewModelTests
     }
 
     [TestMethod]
+    public async Task PathAndModeSavesPreserveLoadedTimings()
+    {
+        string libraryPath = workspace.CreateDirectory("TimingLibrary");
+        SettingsService settings = workspace.CreateSettingsService();
+        settings.Save(new AppSettings
+        {
+            FastFadeSeconds = 0.25f,
+            MediumFadeSeconds = 3.5f,
+            SlowFadeSeconds = 12.75f,
+            CrossfadeStaggerSeconds = 1.25f,
+        });
+        var viewModel = new MainViewModel(new LibraryScanner(), settings);
+
+        try
+        {
+            await viewModel.InitializeAsync();
+            await viewModel.SelectLibraryAsync(libraryPath);
+            await viewModel.SetImmediateTransitionModeAsync(ImmediateTransitionMode.Crossfade);
+
+            AppSettings persisted = settings.Load().Settings;
+            Assert.AreEqual(0.25f, persisted.FastFadeSeconds);
+            Assert.AreEqual(3.5f, persisted.MediumFadeSeconds);
+            Assert.AreEqual(12.75f, persisted.SlowFadeSeconds);
+            Assert.AreEqual(1.25f, persisted.CrossfadeStaggerSeconds);
+        }
+        finally
+        {
+            await viewModel.DisposeAsync();
+        }
+    }
+
+    [TestMethod]
     public async Task SetImmediateTransitionMode_UpdatesBindingsAndPersistsExistingPath()
     {
         string libraryPath = workspace.CreateDirectory("ModeLibrary");
@@ -247,13 +508,13 @@ public sealed class MainViewModelTests
                 viewModel.PreferredImmediateTransitionMode);
             Assert.IsFalse(viewModel.IsHardCutSelected);
             Assert.IsTrue(viewModel.IsCrossfadeSelected);
-            Assert.AreEqual("Play Now (Crossfade)", viewModel.PlayNowLabel);
+            Assert.AreEqual("Play Now", viewModel.PlayNowLabel);
             CollectionAssert.Contains(
                 changedProperties,
                 nameof(MainViewModel.PreferredImmediateTransitionMode));
             CollectionAssert.Contains(changedProperties, nameof(MainViewModel.IsHardCutSelected));
             CollectionAssert.Contains(changedProperties, nameof(MainViewModel.IsCrossfadeSelected));
-            CollectionAssert.Contains(changedProperties, nameof(MainViewModel.PlayNowLabel));
+            CollectionAssert.Contains(changedProperties, nameof(MainViewModel.TransitionModeLabel));
 
             AppSettings persisted = settings.Load().Settings;
             Assert.AreEqual(AppSettings.CurrentVersion, persisted.Version);

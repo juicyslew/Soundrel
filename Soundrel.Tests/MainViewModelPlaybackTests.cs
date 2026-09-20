@@ -61,6 +61,133 @@ public sealed class MainViewModelPlaybackTests
     }
 
     [TestMethod]
+    public async Task ExactTrackPlayNowRequiresSelectedPlaylistAndForwardsTrackModeAndDuration()
+    {
+        IReadOnlyList<LibraryTreeNode> nodes = await LoadPlaylistsAsync(
+            ("First", new[] { "first.mp3" }),
+            ("Second", new[] { "second.mp3", "second-two.mp3" }));
+        LibraryTreeNode first = nodes.Single(node => node.Name == "First");
+        LibraryTreeNode second = nodes.Single(node => node.Name == "Second");
+
+        viewModel.SelectNode(second);
+        await viewModel.SetImmediateTransitionModeAsync(ImmediateTransitionMode.Crossfade);
+        viewModel.ToggleFadeSpeed();
+
+        await viewModel.PlayNowAsync(first.Playlist!.Tracks[0]);
+        Assert.IsEmpty(engine.PlayRequests);
+
+        LibraryTrack exactTrack = second.Playlist!.Tracks[1];
+        await viewModel.PlayNowAsync(exactTrack);
+
+        Assert.AreSame(exactTrack, viewModel.CurrentTrack);
+        Assert.AreSame(exactTrack, engine.PlayRequests[^1].Track);
+        Assert.AreEqual(ImmediateTransitionMode.Crossfade, engine.PlayRequests[^1].TransitionMode);
+        Assert.AreEqual(
+            viewModel.ConfiguredSlowFadeDuration,
+            engine.FadeRequests[^1].FullScaleDuration);
+    }
+
+    [TestMethod]
+    public async Task StateAwareFadeTogglesResolveQueuedDirectionsAndUseSelectedDuration()
+    {
+        string libraryPath = workspace.CreateLibrary();
+        workspace.CreateTrack("Music", "Active", "active.mp3");
+        workspace.CreateTrack("Ambience", "rain.mp3");
+        await viewModel.SelectLibraryAsync(libraryPath);
+        viewModel.SelectNode(viewModel.LibraryNodes.Single());
+        await viewModel.PlayNowAsync();
+        await viewModel.PlayAmbienceAsync(viewModel.AmbienceTracks.Single());
+        viewModel.ToggleFadeSpeed();
+
+        int masterFadeCount = engine.FadeRequests.Count;
+        Task[] toggles =
+        [
+            viewModel.ToggleMasterFadeAsync(),
+            viewModel.ToggleMasterFadeAsync(),
+            viewModel.ToggleMusicFadeAsync(),
+            viewModel.ToggleMusicFadeAsync(),
+            viewModel.ToggleAmbienceFadeAsync(),
+            viewModel.ToggleAmbienceFadeAsync(),
+        ];
+        await Task.WhenAll(toggles).WaitAsync(TestTimeout);
+
+        CollectionAssert.AreEqual(
+            new[]
+            {
+                new FadeRequest(MasterFadeDirection.Out, viewModel.ConfiguredSlowFadeDuration),
+                new FadeRequest(MasterFadeDirection.In, viewModel.ConfiguredSlowFadeDuration),
+            },
+            engine.FadeRequests.Skip(masterFadeCount).ToArray());
+        CollectionAssert.AreEqual(
+            new[]
+            {
+                new FadeRequest(MasterFadeDirection.Out, viewModel.ConfiguredSlowFadeDuration),
+                new FadeRequest(MasterFadeDirection.In, viewModel.ConfiguredSlowFadeDuration),
+            },
+            engine.MusicFadeRequests.ToArray());
+        CollectionAssert.AreEqual(
+            new[]
+            {
+                new FadeRequest(MasterFadeDirection.Out, viewModel.ConfiguredSlowFadeDuration),
+                new FadeRequest(MasterFadeDirection.In, viewModel.ConfiguredSlowFadeDuration),
+            },
+            engine.AmbienceFadeRequests.ToArray());
+    }
+
+    [TestMethod]
+    public async Task StopAllUsesSelectedAutomaticFadeDuration()
+    {
+        LibraryTreeNode playlistNode = await LoadPlaylistAsync("Stop", "stop.mp3");
+        viewModel.SelectNode(playlistNode);
+        await viewModel.PlayNowAsync();
+        viewModel.ToggleFadeSpeed();
+        engine.MasterGain = 1f;
+        engine.MasterFadeState = MasterFadeState.Full;
+        await viewModel.UpdatePlaybackProgressAsync();
+
+        await viewModel.StopAllAsync();
+
+        Assert.AreEqual(
+            viewModel.ConfiguredSlowFadeDuration,
+            engine.FadeRequests.Last(request => request.Direction == MasterFadeDirection.Out)
+                .FullScaleDuration);
+    }
+
+    [TestMethod]
+    public async Task Initialize_WiresLoadedMediumAndStaggerAndFadeActionsUseConfiguredFastSlow()
+    {
+        workspace.CreateSettingsService().Save(new AppSettings
+        {
+            FastFadeSeconds = 0.25f,
+            MediumFadeSeconds = 3.5f,
+            SlowFadeSeconds = 12.75f,
+            CrossfadeStaggerSeconds = 3.25f,
+        });
+
+        await viewModel.InitializeAsync();
+
+        Assert.AreEqual(
+            new TimingRequest(TimeSpan.FromSeconds(3.5), TimeSpan.FromSeconds(3.25)),
+            engine.TimingRequests.Single());
+
+        LibraryTreeNode playlistNode = await LoadPlaylistAsync("ConfiguredFades", "fade.mp3");
+        viewModel.SelectNode(playlistNode);
+        await viewModel.PlayNowAsync();
+        await viewModel.QuickFadeOutAsync();
+        await viewModel.SlowFadeInAsync();
+
+        CollectionAssert.AreEqual(
+            new[]
+            {
+                new FadeRequest(MasterFadeDirection.Out, TimeSpan.Zero),
+                new FadeRequest(MasterFadeDirection.In, TimeSpan.FromSeconds(0.25)),
+                new FadeRequest(MasterFadeDirection.Out, TimeSpan.FromSeconds(0.25)),
+                new FadeRequest(MasterFadeDirection.In, TimeSpan.FromSeconds(12.75)),
+            },
+            engine.FadeRequests.ToArray());
+    }
+
+    [TestMethod]
     public async Task AmbienceRowAllowsStopToPlayFadeReversal()
     {
         string libraryPath = workspace.CreateLibrary();
@@ -134,6 +261,245 @@ public sealed class MainViewModelPlaybackTests
             engine.AmbienceGainRequests.Select(request => request.SourceGain).ToArray());
         Assert.AreEqual(0.8f, controller.Snapshot.AmbienceSnapshots.Single().SourceGain);
         Assert.AreEqual(0.8f, row.Gain);
+    }
+
+    [TestMethod]
+    public async Task AmbienceRenderedProgressDoesNotOverwriteRequestedSourceGainTarget()
+    {
+        string libraryPath = workspace.CreateLibrary();
+        workspace.CreateTrack("Ambience", "rain.mp3");
+        engine.AmbienceDuration = TimeSpan.FromMinutes(3);
+        await viewModel.SelectLibraryAsync(libraryPath);
+        AmbienceTrackViewModel row = viewModel.AmbienceTracks.Single();
+        await viewModel.PlayAmbienceAsync(row);
+        await viewModel.SetAmbienceSourceGainAsync(row, 0.8f);
+
+        engine.CompleteAmbienceTransition(row.FilePath);
+        engine.SetAmbienceProgress(row.FilePath, TimeSpan.FromSeconds(12), 0.65f);
+        engine.SetAmbienceRenderedSourceGain(row.FilePath, 0.4f);
+
+        await viewModel.UpdatePlaybackProgressAsync();
+
+        Assert.AreEqual(0.8f, row.Gain);
+        Assert.AreEqual("80%", row.GainDisplay);
+        Assert.AreEqual(0.65f, row.LifecycleGain);
+        Assert.AreEqual(TimeSpan.FromSeconds(12), row.Position);
+        Assert.AreEqual(TimeSpan.FromMinutes(3), row.Duration);
+        Assert.AreEqual(AmbiencePlaybackState.Playing, row.PlaybackState);
+    }
+
+    [TestMethod]
+    public async Task SaveAmbiencePresetCapturesLogicalOnSourcesAndExcludesFadingOut()
+    {
+        string libraryPath = workspace.CreateLibrary();
+        workspace.CreateTrack("Ambience", "playing.mp3");
+        workspace.CreateTrack("Ambience", "zero.mp3");
+        workspace.CreateTrack("Ambience", "stopping.mp3");
+        await viewModel.SelectLibraryAsync(libraryPath);
+
+        AmbienceTrackViewModel playing = viewModel.AmbienceTracks.Single(row => row.Name == "playing");
+        AmbienceTrackViewModel zero = viewModel.AmbienceTracks.Single(row => row.Name == "zero");
+        AmbienceTrackViewModel stopping = viewModel.AmbienceTracks.Single(row => row.Name == "stopping");
+        await viewModel.PlayAmbienceAsync(playing);
+        await viewModel.SetAmbienceSourceGainAsync(playing, 0.8f);
+        engine.CompleteAmbienceTransition(playing.FilePath);
+        engine.SetAmbienceProgress(playing.FilePath, TimeSpan.FromSeconds(3), 0.3f);
+        engine.SetAmbienceRenderedSourceGain(playing.FilePath, 0.25f);
+        await viewModel.UpdatePlaybackProgressAsync();
+
+        zero.Gain = 0f;
+        await viewModel.PlayAmbienceAsync(zero);
+        await viewModel.PlayAmbienceAsync(stopping);
+        await viewModel.StopAmbienceAsync(stopping);
+
+        viewModel.AmbiencePresetName = "  Scene  ";
+        await viewModel.SaveAmbiencePresetAsync();
+
+        AmbiencePreset preset = viewModel.CurrentLibraryPresets.Single();
+        CollectionAssert.AreEquivalent(
+            new[] { "playing.mp3", "zero.mp3" },
+            preset.Tracks.Select(track => track.RelativePath).ToArray());
+        Assert.AreEqual(0.8f, preset.Tracks.Single(track => track.RelativePath == "playing.mp3").SourceVolume);
+        Assert.AreEqual(0f, preset.Tracks.Single(track => track.RelativePath == "zero.mp3").SourceVolume);
+        Assert.AreEqual("Scene", preset.Name);
+        Assert.HasCount(1, workspace.CreateSettingsService().Load().Settings.AmbiencePresets.Single().Presets);
+    }
+
+    [TestMethod]
+    public async Task ApplyAmbiencePresetUsesOneExactBatchAndReportsMissingEntries()
+    {
+        string libraryPath = workspace.CreateLibrary();
+        workspace.CreateTrack("Ambience", "keep.mp3");
+        workspace.CreateTrack("Ambience", "start.mp3");
+        await viewModel.SelectLibraryAsync(libraryPath);
+        AmbienceTrackViewModel keep = viewModel.AmbienceTracks.Single(row => row.Name == "keep");
+        await viewModel.PlayAmbienceAsync(keep);
+
+        string missing = "missing.mp3";
+        // Reloading settings is deliberately avoided: this verifies the same
+        // public selection path used by a later thin UI handler.
+        viewModel.SelectedAmbiencePreset = new AmbiencePreset(
+            "Scene",
+            [
+                new AmbiencePresetTrack("start.mp3", 0.25f),
+                new AmbiencePresetTrack(missing, 0.5f),
+            ]);
+        await viewModel.ApplyAmbiencePresetAsync();
+
+        Assert.HasCount(2, engine.AmbiencePlayRequests);
+        Assert.AreEqual(0.25f, engine.AmbiencePlayRequests[^1].SourceGain);
+        StringAssert.Contains(viewModel.StatusText, missing);
+        StringAssert.Contains(viewModel.StatusText, "Skipped missing");
+    }
+
+    [TestMethod]
+    public async Task ApplyAmbiencePresetUsesSelectedAutomaticFadeDurationWhenGloballyStopped()
+    {
+        string libraryPath = workspace.CreateLibrary();
+        workspace.CreateTrack("Ambience", "slow-start.mp3");
+        await viewModel.SelectLibraryAsync(libraryPath);
+        viewModel.ToggleFadeSpeed();
+        viewModel.SelectedAmbiencePreset = new AmbiencePreset(
+            "Slow Scene",
+            [new AmbiencePresetTrack("slow-start.mp3", 0.5f)]);
+
+        await viewModel.ApplyAmbiencePresetAsync();
+
+        Assert.AreEqual(
+            new FadeRequest(MasterFadeDirection.In, viewModel.ConfiguredSlowFadeDuration),
+            engine.FadeRequests[^1]);
+    }
+
+    [TestMethod]
+    public async Task PresetUpdateAndDeleteAreCaseInsensitiveAndPersistInCurrentLibraryScope()
+    {
+        string libraryPath = workspace.CreateLibrary();
+        workspace.CreateTrack("Ambience", "rain.mp3");
+        await viewModel.SelectLibraryAsync(libraryPath);
+        viewModel.AmbiencePresetName = "Rainy";
+        await viewModel.SaveAmbiencePresetAsync();
+        viewModel.AmbiencePresetName = " rainy ";
+        await viewModel.SaveAmbiencePresetAsync();
+
+        Assert.HasCount(1, viewModel.CurrentLibraryPresets);
+        Assert.AreEqual("rainy", viewModel.CurrentLibraryPresets[0].Name);
+        Assert.IsTrue(viewModel.CanDeleteAmbiencePreset);
+        await viewModel.DeleteAmbiencePresetAsync();
+
+        Assert.IsEmpty(viewModel.CurrentLibraryPresets);
+        Assert.IsEmpty(workspace.CreateSettingsService().Load().Settings.AmbiencePresets);
+    }
+
+    [TestMethod]
+    public async Task QueuedPresetUpdateThenDeleteUsesTheSameFifoAndDeletesThePreset()
+    {
+        string libraryPath = workspace.CreateLibrary();
+        workspace.CreateTrack("Ambience", "blocked.mp3");
+        await viewModel.SelectLibraryAsync(libraryPath);
+        AmbienceTrackViewModel row = viewModel.AmbienceTracks.Single();
+        await viewModel.PlayAmbienceAsync(row);
+        viewModel.AmbiencePresetName = "Scene";
+        await viewModel.SaveAmbiencePresetAsync();
+
+        var fadeEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseFade = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        engine.FadeHandler = async (_, _) =>
+        {
+            fadeEntered.TrySetResult();
+            await releaseFade.Task.ConfigureAwait(false);
+        };
+
+        Task fade = viewModel.QuickFadeOutAsync();
+        Task update = Task.CompletedTask;
+        Task delete = Task.CompletedTask;
+        try
+        {
+            await fadeEntered.Task.WaitAsync(TestTimeout);
+            update = viewModel.SaveAmbiencePresetAsync("scene");
+            delete = viewModel.DeleteAmbiencePresetAsync();
+            releaseFade.TrySetResult();
+            await Task.WhenAll(fade, update, delete).WaitAsync(TestTimeout);
+
+            Assert.IsEmpty(viewModel.CurrentLibraryPresets);
+            Assert.IsEmpty(workspace.CreateSettingsService().Load().Settings.AmbiencePresets);
+        }
+        finally
+        {
+            releaseFade.TrySetResult();
+            await Task.WhenAll(fade, update, delete).WaitAsync(TestTimeout);
+        }
+    }
+
+    [TestMethod]
+    public async Task QueuedPresetUpdateForPreviousLibraryDoesNotHijackCurrentSelection()
+    {
+        string firstLibrary = workspace.CreateLibrary("FirstLibrary");
+        workspace.CreateTrackInLibrary(firstLibrary, "Ambience", "first.mp3");
+        string secondLibrary = workspace.CreateLibrary("SecondLibrary");
+        workspace.CreateTrackInLibrary(secondLibrary, "Ambience", "second.mp3");
+        await viewModel.SelectLibraryAsync(firstLibrary);
+        await viewModel.PlayAmbienceAsync(viewModel.AmbienceTracks.Single());
+        viewModel.AmbiencePresetName = "Scene";
+        await viewModel.SaveAmbiencePresetAsync();
+
+        var fadeEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseFade = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        engine.FadeHandler = async (_, _) =>
+        {
+            fadeEntered.TrySetResult();
+            await releaseFade.Task.ConfigureAwait(false);
+        };
+
+        Task fade = viewModel.QuickFadeOutAsync();
+        Task update = Task.CompletedTask;
+        Task switchLibrary = Task.CompletedTask;
+        try
+        {
+            await fadeEntered.Task.WaitAsync(TestTimeout);
+            update = viewModel.SaveAmbiencePresetAsync("Scene");
+            switchLibrary = viewModel.SelectLibraryAsync(secondLibrary);
+            await switchLibrary.WaitAsync(TestTimeout);
+
+            Assert.AreEqual(secondLibrary, viewModel.SelectedLibraryPath);
+            Assert.IsEmpty(viewModel.CurrentLibraryPresets);
+            Assert.IsNull(viewModel.SelectedAmbiencePreset);
+
+            releaseFade.TrySetResult();
+            await Task.WhenAll(fade, update).WaitAsync(TestTimeout);
+            Assert.IsEmpty(viewModel.CurrentLibraryPresets);
+            Assert.IsNull(viewModel.SelectedAmbiencePreset);
+        }
+        finally
+        {
+            releaseFade.TrySetResult();
+            await Task.WhenAll(fade, update, switchLibrary).WaitAsync(TestTimeout);
+        }
+    }
+
+    [TestMethod]
+    public async Task LoadingAndSwitchingLibrariesWithPresetsDoesNotStartAmbience()
+    {
+        string firstLibrary = workspace.CreateLibrary("FirstLibrary");
+        workspace.CreateTrackInLibrary(firstLibrary, "Ambience", "first.mp3");
+        string secondLibrary = workspace.CreateLibrary("SecondLibrary");
+        workspace.CreateTrackInLibrary(secondLibrary, "Ambience", "second.mp3");
+        workspace.CreateSettingsService().Save(new AppSettings
+        {
+            Version = AppSettings.CurrentVersion,
+            SelectedLibraryPath = firstLibrary,
+            AmbiencePresets =
+            [new LibraryAmbiencePresets(
+                firstLibrary,
+                [new AmbiencePreset(
+                    "Scene",
+                    [new AmbiencePresetTrack("first.mp3", 0.5f)])])],
+        });
+
+        await viewModel.InitializeAsync();
+        await viewModel.SelectLibraryAsync(secondLibrary);
+
+        Assert.IsEmpty(engine.AmbiencePlayRequests);
+        Assert.IsEmpty(viewModel.CurrentLibraryPresets);
     }
 
     [TestMethod]
@@ -410,9 +776,11 @@ public sealed class MainViewModelPlaybackTests
         CollectionAssert.AreEqual(
             new[]
             {
-                new FadeRequest(MasterFadeDirection.Out, MainViewModel.QuickFadeDuration),
-                new FadeRequest(MasterFadeDirection.In, MainViewModel.QuickFadeDuration),
-                new FadeRequest(MasterFadeDirection.Out, MainViewModel.SlowFadeDuration),
+                new FadeRequest(MasterFadeDirection.Out, TimeSpan.Zero),
+                new FadeRequest(MasterFadeDirection.In, viewModel.ConfiguredFastFadeDuration),
+                new FadeRequest(MasterFadeDirection.Out, viewModel.ConfiguredFastFadeDuration),
+                new FadeRequest(MasterFadeDirection.In, viewModel.ConfiguredFastFadeDuration),
+                new FadeRequest(MasterFadeDirection.Out, viewModel.ConfiguredSlowFadeDuration),
             },
             engine.FadeRequests.ToArray());
         Assert.AreEqual(0f, viewModel.MasterGain);
@@ -428,17 +796,21 @@ public sealed class MainViewModelPlaybackTests
         viewModel.SelectNode(playlistNode);
         await viewModel.PlayNowAsync();
 
-        Assert.AreEqual(TimeSpan.FromSeconds(2), MainViewModel.QuickFadeDuration);
-        Assert.AreEqual(TimeSpan.FromSeconds(10), MainViewModel.SlowFadeDuration);
-        Assert.AreEqual(1f, viewModel.MasterGain);
-        Assert.AreEqual("100%", viewModel.MasterGainDisplay);
-        Assert.AreEqual(MasterFadeState.Full, viewModel.MasterFadeState);
-        Assert.AreEqual("Full", viewModel.MasterFadeStateDisplay);
+        Assert.AreEqual(
+            TimeSpan.FromSeconds(AppSettings.DefaultFastFadeSeconds),
+            viewModel.ConfiguredFastFadeDuration);
+        Assert.AreEqual(
+            TimeSpan.FromSeconds(AppSettings.DefaultSlowFadeSeconds),
+            viewModel.ConfiguredSlowFadeDuration);
+        Assert.AreEqual(0f, viewModel.MasterGain);
+        Assert.AreEqual("0%", viewModel.MasterGainDisplay);
+        Assert.AreEqual(MasterFadeState.FadingIn, viewModel.MasterFadeState);
+        Assert.AreEqual("Fading In", viewModel.MasterFadeStateDisplay);
 
         await viewModel.QuickFadeOutAsync();
 
-        Assert.AreEqual(MasterFadeState.FadingOut, viewModel.MasterFadeState);
-        Assert.AreEqual("Fading Out", viewModel.MasterFadeStateDisplay);
+        Assert.AreEqual(MasterFadeState.Muted, viewModel.MasterFadeState);
+        Assert.AreEqual("Muted", viewModel.MasterFadeStateDisplay);
 
         engine.MasterGain = 0.42f;
         engine.MasterFadeState = MasterFadeState.FadingOut;
@@ -462,17 +834,17 @@ public sealed class MainViewModelPlaybackTests
         await viewModel.PlayNowAsync();
 
         AssertFadeAvailability(
-            canQuickIn: false,
+            canQuickIn: true,
             canQuickOut: true,
-            canSlowIn: false,
+            canSlowIn: true,
             canSlowOut: true);
 
         await viewModel.PauseResumeAsync();
         Assert.AreEqual(PlaybackState.Paused, viewModel.PlaybackState);
         AssertFadeAvailability(
-            canQuickIn: false,
+            canQuickIn: true,
             canQuickOut: true,
-            canSlowIn: false,
+            canSlowIn: true,
             canSlowOut: true);
 
         engine.MasterGain = 0.5f;
@@ -571,10 +943,10 @@ public sealed class MainViewModelPlaybackTests
 
         await viewModel.StopAllAsync();
 
-        Assert.AreEqual(1f, viewModel.MasterGain);
-        Assert.AreEqual(MasterFadeState.Full, viewModel.MasterFadeState);
-        Assert.AreEqual("100%", viewModel.MasterGainDisplay);
-        Assert.AreEqual("Full", viewModel.MasterFadeStateDisplay);
+        Assert.AreEqual(0f, viewModel.MasterGain);
+        Assert.AreEqual(MasterFadeState.Muted, viewModel.MasterFadeState);
+        Assert.AreEqual("0%", viewModel.MasterGainDisplay);
+        Assert.AreEqual("Muted", viewModel.MasterFadeStateDisplay);
 
         await viewModel.PlayNowAsync();
         engine.MasterGain = 0f;
@@ -880,10 +1252,10 @@ public sealed class MainViewModelPlaybackTests
             uiContext));
         var commands = new (MasterFadeDirection Direction, TimeSpan Duration, Func<MainViewModel, Task> Run)[]
         {
-            (MasterFadeDirection.In, MainViewModel.QuickFadeDuration, static vm => vm.QuickFadeInAsync()),
-            (MasterFadeDirection.Out, MainViewModel.QuickFadeDuration, static vm => vm.QuickFadeOutAsync()),
-            (MasterFadeDirection.In, MainViewModel.SlowFadeDuration, static vm => vm.SlowFadeInAsync()),
-            (MasterFadeDirection.Out, MainViewModel.SlowFadeDuration, static vm => vm.SlowFadeOutAsync()),
+            (MasterFadeDirection.In, localViewModel.ConfiguredFastFadeDuration, static vm => vm.QuickFadeInAsync()),
+            (MasterFadeDirection.Out, localViewModel.ConfiguredFastFadeDuration, static vm => vm.QuickFadeOutAsync()),
+            (MasterFadeDirection.In, localViewModel.ConfiguredSlowFadeDuration, static vm => vm.SlowFadeInAsync()),
+            (MasterFadeDirection.Out, localViewModel.ConfiguredSlowFadeDuration, static vm => vm.SlowFadeOutAsync()),
         };
 
         try
@@ -924,9 +1296,15 @@ public sealed class MainViewModelPlaybackTests
             }
 
             CollectionAssert.AreEqual(
-                commands
+                new[]
+                {
+                    new FadeRequest(MasterFadeDirection.Out, TimeSpan.Zero),
+                    new FadeRequest(MasterFadeDirection.In, TimeSpan.FromSeconds(2)),
+                }
+                .Concat(commands
                     .Select(command => new FadeRequest(command.Direction, command.Duration))
-                    .ToArray(),
+                    .ToArray())
+                .ToArray(),
                 localEngine.FadeRequests.ToArray());
         }
         finally
@@ -1295,11 +1673,26 @@ public sealed class MainViewModelPlaybackTests
             return path;
         }
 
+        public string CreateLibrary(string name)
+        {
+            string path = Path.Combine(RootPath, name);
+            Directory.CreateDirectory(path);
+            return path;
+        }
+
         public string CreateTrack(params string[] relativeParts)
         {
             string path = relativeParts.Aggregate(
                 Path.Combine(RootPath, "Library"),
                 Path.Combine);
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            File.WriteAllBytes(path, []);
+            return path;
+        }
+
+        public string CreateTrackInLibrary(string libraryPath, params string[] relativeParts)
+        {
+            string path = relativeParts.Aggregate(libraryPath, Path.Combine);
             Directory.CreateDirectory(Path.GetDirectoryName(path)!);
             File.WriteAllBytes(path, []);
             return path;

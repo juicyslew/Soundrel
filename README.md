@@ -1,19 +1,31 @@
 # Soundrel
 
-Soundrel is a native Windows desktop soundboard for tabletop sessions. It
-plays music and ambience from local files and is designed to work completely
-offline: there are no accounts, online services, downloads, or network
-requirements.
+Soundrel is a native Windows WPF soundboard for tabletop sessions. It plays
+music and ambience from local files and works completely offline: there are no
+accounts, online services, downloads, or network requirements.
 
 ## Features
 
-- Continuous shuffled music playback with Play Now, After Current, pause,
-  skip, Stop All, and an explicit FIFO track queue.
-- Hard cuts or fixed two-second crossfades when switching playlists.
-- Quick two-second and slow ten-second master fade in/out.
-- Multiple looping ambience sources with independent controls and separate
-  music, ambience, and master levels.
-- Folder-based intensity groups, such as `Calm` and `Tense` under `Forest`.
+- Continuous shuffled music playback with playlist and exact-track **Play Now**,
+  **After Current**, pause/resume, skip, **Stop All**, and an explicit FIFO
+  queue. **Clear Queue** is in the Queue section.
+- A single **Transition: Hard Cut / Crossfade** toggle. Crossfades use the
+  configured Medium duration and stagger.
+- A state-aware master **Fade In / Fade Out** control and a **Fast / Slow**
+  runtime speed toggle. Stop All fades the complete output before stopping
+  sources; starting new audio from globally stopped state fades it in.
+- Dedicated, searchable **Ambience** area with compact tiles, independent
+  play/stop and source-volume controls, and hidden sources that continue
+  playing while filtered out.
+- **Ambient Presets** per library. Presets can be selected, applied again,
+  saved or updated, and deleted with confirmation. A preset captures the
+  currently enabled ambience sounds and their requested source volumes; an
+  empty preset turns ambience off.
+- Separate music, ambience-bus, and master levels. Active volume changes ramp
+  at the configured Medium rate, while the controls continue to show the
+  requested targets. Volume tracks also support proportional clicking.
+- Folder-based intensity groups, such as `Calm` and `Tense` under `Forest`,
+  with qualified names such as `Forest / Calm` where needed.
 - Managed MP3 decoding and WAV playback without optional codec packs.
 
 ## Requirements
@@ -47,14 +59,49 @@ looping ambience sources.
 ## Use
 
 1. Start Soundrel and choose the root of a local sound library.
-2. Select a playlist and use **Play Now** or **After Current**. Queue individual
-   tracks when they should play in FIFO order.
-3. Use the music, ambience, master, crossfade, and fade controls during the
-   session. Rescan after changing files on disk.
+2. Select a playlist in **Library**. The **Selected Playlist** heading and
+   session information use `Group / Playlist` paths when a group is present.
+3. Use playlist **Play Now** or **After Current**. Use a track's **Play Now**
+   to start that exact track, or **Queue** to add it to the FIFO queue. Play Now
+   preserves explicitly queued tracks.
+4. In **Ambience**, search by name and use each compact tile's play/stop toggle
+   and volume slider. Filtering only changes what is shown; it does not stop
+   hidden sounds.
+5. Select **Transition: Hard Cut** or **Transition: Crossfade** for immediate
+   playlist and track replacements. Use the master **Fade In / Fade Out**
+   control and choose **Fade speed: Fast** or **Slow** for new or reversed
+   master fades. **Stop All** fades to silence, then stops music and ambience;
+   the active playlist selection and explicit queue remain available. Resume
+   does not trigger a new automatic master fade-in.
+6. Use **Ambient Presets** to select a preset (selection applies immediately),
+   **Apply** it again, **Save** or update it by name, or **Delete** it after
+   confirmation. Presets are stored separately for each library. Missing
+   inactive files are skipped and reported while remaining in the preset.
+   Rescan after changing files on disk.
 
-Basic settings are stored at
-`%LocalAppData%/Soundrel/settings.json`, including the selected library and
-volume levels.
+## Timing settings
+
+Settings use schema version 5 and are stored at
+`%LocalAppData%\Soundrel\settings.json`. The timing fields are seconds:
+
+```json
+{
+  "version": 5,
+  "fastFadeSeconds": 2,
+  "mediumFadeSeconds": 5,
+  "slowFadeSeconds": 10,
+  "crossfadeStaggerSeconds": 1
+}
+```
+
+The defaults are Fast 2 seconds, Medium 5 seconds, Slow 10 seconds, and a
+1-second crossfade stagger. Timing values must be finite; fade durations must
+be greater than zero, and the stagger must be at least zero and no greater than
+Medium. Close Soundrel before editing the JSON and restart it for changes to
+take effect. Invalid fade durations recover to their documented defaults with
+a warning; an invalid stagger recovers to the 1-second default capped at the
+effective Medium duration. Saving other settings preserves valid timing values
+and Ambient Presets.
 
 ## Build and test
 
@@ -86,12 +133,12 @@ needed.
 
 For a release check, copy `artifacts/publish/win-x64/` or its ZIP and a local
 MP3/WAV library to a clean Windows 10/11 x64 machine with no separately
-installed .NET runtime.
-Disable all network adapters before extraction and launch. Confirm that the
-package contains the executable, runtime files, managed dependencies, and JSON
-files; starts without a bootstrapper or download; discovers both formats; and
-supports a complete music-plus-ambience session. Check volume persistence after
-restarting the application. The full manual release checklist is in
+installed .NET runtime. Disable all network adapters before extraction and
+launch. Confirm that the package contains the executable, runtime files,
+managed dependencies, and JSON files; starts without a bootstrapper or
+download; discovers both formats; and supports a complete music-plus-ambience
+session. Check volume persistence after restarting the application. The full
+manual release checklist is in
 [`MANUAL_TEST_CHECKLIST.md`](MANUAL_TEST_CHECKLIST.md).
 
 ## Known limits

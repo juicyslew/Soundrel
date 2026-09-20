@@ -9,6 +9,7 @@ public sealed class AmbienceTrackViewModel : ViewModelBase
 {
     private LibraryTrack track;
     private float gain = 1f;
+    private float lifecycleGain;
     private Soundrel.Models.AmbiencePlaybackState? playbackState;
     private TimeSpan position;
     private TimeSpan duration;
@@ -46,6 +47,19 @@ public sealed class AmbienceTrackViewModel : ViewModelBase
         set => Gain = value;
     }
 
+    /// <summary>
+    /// The normalized rendered play/stop envelope gain. This is intentionally
+    /// separate from <see cref="Gain"/>, which remains the requested source
+    /// volume target.
+    /// </summary>
+    public float LifecycleGain
+    {
+        get => lifecycleGain;
+        private set => SetProperty(
+            ref lifecycleGain,
+            float.IsFinite(value) ? Math.Clamp(value, 0f, 1f) : 0f);
+    }
+
     public Soundrel.Models.AmbiencePlaybackState? PlaybackState
     {
         get => playbackState;
@@ -62,6 +76,8 @@ public sealed class AmbienceTrackViewModel : ViewModelBase
                 OnPropertyChanged(nameof(StateLabel));
                 OnPropertyChanged(nameof(AmbiencePlaybackStateLabel));
                 OnPropertyChanged(nameof(PlaybackStateDisplay));
+                OnPropertyChanged(nameof(ToggleLabel));
+                OnPropertyChanged(nameof(PlayStopLabel));
             }
         }
     }
@@ -83,6 +99,10 @@ public sealed class AmbienceTrackViewModel : ViewModelBase
     public string AmbiencePlaybackStateLabel => PlaybackStateLabel;
 
     public string PlaybackStateDisplay => PlaybackStateLabel;
+
+    public string ToggleLabel => CanStop ? "Stop" : "Play";
+
+    public string PlayStopLabel => ToggleLabel;
 
     public string GainDisplay => $"{Math.Clamp((int)Math.Round(Gain * 100), 0, 100)}%";
 
@@ -106,6 +126,8 @@ public sealed class AmbienceTrackViewModel : ViewModelBase
         Soundrel.Models.AmbiencePlaybackState.FadingIn or
         Soundrel.Models.AmbiencePlaybackState.Playing;
 
+    public bool CanToggle => true;
+
     internal void UpdateTrack(LibraryTrack value)
     {
         ArgumentNullException.ThrowIfNull(value);
@@ -120,17 +142,25 @@ public sealed class AmbienceTrackViewModel : ViewModelBase
         OnPropertyChanged(nameof(FilePath));
     }
 
-    internal void ApplySnapshot(AmbiencePlaybackSnapshot snapshot)
+    internal void ApplyLogicalSnapshot(AmbiencePlaybackSnapshot snapshot)
     {
         ArgumentNullException.ThrowIfNull(snapshot);
         Gain = snapshot.SourceGain;
+        ApplyRenderedProgress(snapshot);
+    }
+
+    internal void ApplyRenderedProgress(AmbiencePlaybackSnapshot snapshot)
+    {
+        ArgumentNullException.ThrowIfNull(snapshot);
         Position = Max(snapshot.Position, TimeSpan.Zero);
         Duration = Max(snapshot.Duration, TimeSpan.Zero);
+        LifecycleGain = snapshot.LifecycleGain;
         PlaybackState = snapshot.State;
     }
 
     internal void MarkStopped()
     {
+        LifecycleGain = 0f;
         PlaybackState = null;
         Position = TimeSpan.Zero;
         Duration = TimeSpan.Zero;

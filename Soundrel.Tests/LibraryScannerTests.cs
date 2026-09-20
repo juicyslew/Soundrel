@@ -1,4 +1,5 @@
 using System.IO;
+using Soundrel.Models;
 using Soundrel.Services;
 
 namespace Soundrel.Tests;
@@ -42,6 +43,32 @@ public sealed class LibraryScannerTests
         Assert.AreEqual("morning", catalog.Groups[0].Playlists[0].Tracks.Single().Name);
         Assert.AreEqual("theme", catalog.Groups[0].Playlists[1].Tracks.Single().Name);
         Assert.IsEmpty(catalog.Issues);
+    }
+
+    [TestMethod]
+    public void Scan_QualifiedPlaylistNamesAreRelativeForDirectNestedAndMixedLayouts()
+    {
+        using var library = new TemporaryLibrary();
+        library.CreateFile("Music", "Solo", "song.mp3");
+        library.CreateFile("Music", "Forest", "theme.mp3");
+        library.CreateFile("Music", "Forest", "Calm", "morning.wav");
+        library.CreateFile("Music", "World", "Tavern", "lute.mp3");
+
+        var catalog = new LibraryScanner().Scan(library.RootPath);
+
+        Assert.AreEqual("Solo", catalog.Playlists.Single().QualifiedDisplayName);
+        LibraryGroup forest = catalog.Groups.Single(group => group.Name == "Forest");
+        CollectionAssert.AreEquivalent(
+            new[] { "Forest", "Forest / Calm" },
+            forest.Playlists.Select(playlist => playlist.QualifiedDisplayName).ToArray());
+        LibraryGroup world = catalog.Groups.Single(group => group.Name == "World");
+        Assert.AreEqual("World / Tavern", world.Playlists.Single().QualifiedDisplayName);
+        Assert.IsFalse(catalog.Groups
+            .SelectMany(group => group.Playlists)
+            .Any(playlist => string.Equals(
+                playlist.QualifiedDisplayName,
+                playlist.Name + " / " + playlist.Name,
+                StringComparison.Ordinal)));
     }
 
     [TestMethod]

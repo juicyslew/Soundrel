@@ -3,6 +3,7 @@ using System.IO;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
+using System.Windows.Media;
 using System.Windows.Threading;
 using Microsoft.Win32;
 using Soundrel.Models;
@@ -17,6 +18,7 @@ public partial class MainWindow : Window
     private bool progressPollInFlight;
     private bool isClosing;
     private bool closeAfterDispose;
+    private bool presetMutationInProgress;
 
     public MainWindow()
     {
@@ -47,7 +49,6 @@ public partial class MainWindow : Window
         {
             ViewModel.ReportError($"Soundrel could not initialize: {exception.Message}");
         }
-
         if (!isClosing)
         {
             progressTimer.Start();
@@ -102,16 +103,28 @@ public partial class MainWindow : Window
         ViewModel.SelectNode(e.NewValue as LibraryTreeNode);
     }
 
+    private void LibraryNodeHeader_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is not FrameworkElement { DataContext: LibraryTreeNode { IsPlaylist: false } })
+        {
+            return;
+        }
+
+        TreeViewItem? item = FindVisualParent<TreeViewItem>(sender as DependencyObject);
+        if (item is null)
+        {
+            return;
+        }
+
+        item.IsExpanded = !item.IsExpanded;
+        e.Handled = true;
+    }
+
     private async void PlayNow_Click(object sender, RoutedEventArgs e) =>
         await RunPlaybackCommandAsync(ViewModel.PlayNowAsync);
 
-    private async void HardCut_Click(object sender, RoutedEventArgs e) =>
-        await RunPlaybackCommandAsync(() =>
-            ViewModel.SetImmediateTransitionModeAsync(ImmediateTransitionMode.HardCut));
-
-    private async void Crossfade_Click(object sender, RoutedEventArgs e) =>
-        await RunPlaybackCommandAsync(() =>
-            ViewModel.SetImmediateTransitionModeAsync(ImmediateTransitionMode.Crossfade));
+    private async void TransitionModeToggle_Click(object sender, RoutedEventArgs e) =>
+        await RunPlaybackCommandAsync(ViewModel.ToggleImmediateTransitionModeAsync);
 
     private async void AfterCurrent_Click(object sender, RoutedEventArgs e) =>
         await RunPlaybackCommandAsync(ViewModel.AfterCurrentAsync);
@@ -124,19 +137,19 @@ public partial class MainWindow : Window
         }
     }
 
-    private async void AmbiencePlay_Click(object sender, RoutedEventArgs e)
+    private async void TrackPlayNow_Click(object sender, RoutedEventArgs e)
     {
-        if (sender is FrameworkElement { DataContext: AmbienceTrackViewModel track })
+        if (sender is FrameworkElement { DataContext: LibraryTrack track })
         {
-            await RunPlaybackCommandAsync(() => ViewModel.PlayAmbienceAsync(track));
+            await RunPlaybackCommandAsync(() => ViewModel.PlayNowAsync(track));
         }
     }
 
-    private async void AmbienceStop_Click(object sender, RoutedEventArgs e)
+    private async void AmbienceToggle_Click(object sender, RoutedEventArgs e)
     {
         if (sender is FrameworkElement { DataContext: AmbienceTrackViewModel track })
         {
-            await RunPlaybackCommandAsync(() => ViewModel.StopAmbienceAsync(track));
+            await RunPlaybackCommandAsync(() => ViewModel.ToggleAmbienceAsync(track));
         }
     }
 
@@ -157,6 +170,124 @@ public partial class MainWindow : Window
             await RunPlaybackCommandAsync(() =>
                 ViewModel.SetAmbienceSourceGainAsync(track, (float)slider.Value));
         }
+    }
+
+    private async void AmbiencePresetComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (presetMutationInProgress ||
+            e.AddedItems.OfType<AmbiencePreset>().FirstOrDefault() is not AmbiencePreset addedPreset)
+        {
+            return;
+        }
+
+        AmbiencePreset selectedPreset = sender is ComboBox { SelectedItem: AmbiencePreset comboPreset }
+            ? comboPreset
+            : addedPreset;
+        if (!ReferenceEquals(ViewModel.SelectedAmbiencePreset, selectedPreset))
+        {
+            ViewModel.SelectedAmbiencePreset = selectedPreset;
+        }
+
+        await ApplyAmbiencePresetAsync();
+    }
+
+    private async void ApplyAmbiencePreset_Click(object sender, RoutedEventArgs e) =>
+        await ApplyAmbiencePresetAsync();
+
+    private async Task ApplyAmbiencePresetAsync()
+    {
+        if (AmbiencePresetComboBox.SelectedItem is AmbiencePreset selectedPreset &&
+            !ReferenceEquals(ViewModel.SelectedAmbiencePreset, selectedPreset))
+        {
+            ViewModel.SelectedAmbiencePreset = selectedPreset;
+        }
+
+        try
+        {
+            await ViewModel.ApplyAmbiencePresetAsync();
+        }
+        catch (Exception exception)
+        {
+            ViewModel.ReportError($"The ambience preset could not be applied: {exception.Message}");
+        }
+    }
+
+    private async void SaveAmbiencePreset_Click(object sender, RoutedEventArgs e)
+    {
+        if (!TryBeginPresetMutation())
+        {
+            return;
+        }
+
+        try
+        {
+            await ViewModel.SaveAmbiencePresetAsync();
+        }
+        catch (Exception exception)
+        {
+            ViewModel.ReportError($"The ambience preset could not be saved: {exception.Message}");
+        }
+        finally
+        {
+            EndPresetMutation();
+        }
+    }
+
+    private async void DeleteAmbiencePreset_Click(object sender, RoutedEventArgs e)
+    {
+        AmbiencePreset? preset = ViewModel.SelectedAmbiencePreset;
+        if (preset is null)
+        {
+            return;
+        }
+
+        MessageBoxResult result = MessageBox.Show(
+            this,
+            $"Delete ambience preset '{preset.Name}'?",
+            "Delete Ambience Preset",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Warning,
+            MessageBoxResult.No);
+        if (result != MessageBoxResult.Yes)
+        {
+            return;
+        }
+
+        if (!TryBeginPresetMutation())
+        {
+            return;
+        }
+
+        try
+        {
+            await ViewModel.DeleteAmbiencePresetAsync();
+        }
+        catch (Exception exception)
+        {
+            ViewModel.ReportError($"The ambience preset could not be deleted: {exception.Message}");
+        }
+        finally
+        {
+            EndPresetMutation();
+        }
+    }
+
+    private bool TryBeginPresetMutation()
+    {
+        if (presetMutationInProgress)
+        {
+            return false;
+        }
+
+        presetMutationInProgress = true;
+        PresetHeaderControls.IsEnabled = false;
+        return true;
+    }
+
+    private void EndPresetMutation()
+    {
+        presetMutationInProgress = false;
+        PresetHeaderControls.IsEnabled = true;
     }
 
     private async void MusicVolumeSlider_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
@@ -219,17 +350,17 @@ public partial class MainWindow : Window
     private async void StopAll_Click(object sender, RoutedEventArgs e) =>
         await RunPlaybackCommandAsync(ViewModel.StopAllAsync);
 
-    private async void QuickFadeIn_Click(object sender, RoutedEventArgs e) =>
-        await RunPlaybackCommandAsync(ViewModel.QuickFadeInAsync);
+    private async void MusicFadeToggle_Click(object sender, RoutedEventArgs e) =>
+        await RunPlaybackCommandAsync(ViewModel.ToggleMusicFadeAsync);
 
-    private async void QuickFadeOut_Click(object sender, RoutedEventArgs e) =>
-        await RunPlaybackCommandAsync(ViewModel.QuickFadeOutAsync);
+    private async void MasterFadeToggle_Click(object sender, RoutedEventArgs e) =>
+        await RunPlaybackCommandAsync(ViewModel.ToggleMasterFadeAsync);
 
-    private async void SlowFadeIn_Click(object sender, RoutedEventArgs e) =>
-        await RunPlaybackCommandAsync(ViewModel.SlowFadeInAsync);
+    private async void AmbienceFadeToggle_Click(object sender, RoutedEventArgs e) =>
+        await RunPlaybackCommandAsync(ViewModel.ToggleAmbienceFadeAsync);
 
-    private async void SlowFadeOut_Click(object sender, RoutedEventArgs e) =>
-        await RunPlaybackCommandAsync(ViewModel.SlowFadeOutAsync);
+    private async void FadeSpeedToggle_Click(object sender, RoutedEventArgs e) =>
+        await RunPlaybackCommandAsync(ViewModel.ToggleFadeSpeedAsync);
 
     private async void ProgressTimer_Tick(object? sender, EventArgs e)
     {
@@ -295,4 +426,20 @@ public partial class MainWindow : Window
     private static bool IsSliderAdjustmentKey(Key key) => key is
         Key.Left or Key.Right or Key.Up or Key.Down or
         Key.PageUp or Key.PageDown or Key.Home or Key.End;
+
+    private static T? FindVisualParent<T>(DependencyObject? child)
+        where T : DependencyObject
+    {
+        while (child is not null)
+        {
+            if (child is T parent)
+            {
+                return parent;
+            }
+
+            child = VisualTreeHelper.GetParent(child);
+        }
+
+        return null;
+    }
 }

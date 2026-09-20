@@ -1,4 +1,4 @@
-﻿<Window x:Class="Soundrel.MainWindow"
+<Window x:Class="Soundrel.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
@@ -11,10 +11,10 @@
         MinWidth="1080"
         MinHeight="680"
         Background="#11151B"
-         Foreground="#E8EDF2"
-         FontFamily="Segoe UI"
-         Loaded="Window_Loaded"
-         Closing="Window_Closing">
+        Foreground="#E8EDF2"
+        FontFamily="Segoe UI"
+        Loaded="Window_Loaded"
+        Closing="Window_Closing">
     <Window.Resources>
         <SolidColorBrush x:Key="PanelBrush" Color="#1A2029" />
         <SolidColorBrush x:Key="PanelBorderBrush" Color="#303A48" />
@@ -26,14 +26,14 @@
             <Setter Property="BorderBrush" Value="{StaticResource PanelBorderBrush}" />
             <Setter Property="BorderThickness" Value="1" />
             <Setter Property="CornerRadius" Value="7" />
-            <Setter Property="Padding" Value="16" />
+            <Setter Property="Padding" Value="12" />
         </Style>
 
         <Style x:Key="SectionTitleStyle" TargetType="TextBlock">
             <Setter Property="FontSize" Value="18" />
             <Setter Property="FontWeight" Value="SemiBold" />
             <Setter Property="Foreground" Value="#F6F8FA" />
-            <Setter Property="Margin" Value="0,0,0,12" />
+            <Setter Property="Margin" Value="0,0,0,8" />
         </Style>
 
         <Style x:Key="MutedTextStyle" TargetType="TextBlock">
@@ -41,23 +41,233 @@
             <Setter Property="TextWrapping" Value="Wrap" />
         </Style>
 
+        <ControlTemplate x:Key="SoundrelButtonTemplate" TargetType="Button">
+            <Border x:Name="ButtonBorder" Background="{TemplateBinding Background}"
+                    BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}"
+                    CornerRadius="4" SnapsToDevicePixels="True">
+                <Grid>
+                    <Border x:Name="HoverOverlay" Background="#FFFFFF" Opacity="0" IsHitTestVisible="False" />
+                    <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                      VerticalAlignment="{TemplateBinding VerticalContentAlignment}"
+                                      Margin="{TemplateBinding Padding}"
+                                      RecognizesAccessKey="True"
+                                      Content="{TemplateBinding Content}"
+                                      ContentTemplate="{TemplateBinding ContentTemplate}"
+                                      ContentStringFormat="{TemplateBinding ContentStringFormat}"
+                                      TextElement.Foreground="{TemplateBinding Foreground}"
+                                      TextElement.FontFamily="{TemplateBinding FontFamily}"
+                                      TextElement.FontSize="{TemplateBinding FontSize}"
+                                      TextElement.FontWeight="{TemplateBinding FontWeight}" />
+                </Grid>
+            </Border>
+            <ControlTemplate.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter TargetName="HoverOverlay" Property="Opacity" Value="0.08" />
+                    <Setter TargetName="ButtonBorder" Property="BorderBrush" Value="#D8E7F2" />
+                </Trigger>
+                <Trigger Property="IsKeyboardFocusWithin" Value="True">
+                    <Setter TargetName="ButtonBorder" Property="BorderBrush" Value="#D1A947" />
+                </Trigger>
+                <Trigger Property="IsPressed" Value="True">
+                    <Setter TargetName="HoverOverlay" Property="Opacity" Value="0.18" />
+                    <Setter TargetName="ButtonBorder" Property="BorderBrush" Value="#FFFFFF" />
+                    <Setter TargetName="ButtonBorder" Property="BorderThickness" Value="2" />
+                </Trigger>
+                <Trigger Property="IsEnabled" Value="False">
+                    <Setter TargetName="ButtonBorder" Property="Opacity" Value="0.58" />
+                </Trigger>
+            </ControlTemplate.Triggers>
+        </ControlTemplate>
+
         <Style x:Key="ActionButtonStyle" TargetType="Button">
-            <Setter Property="MinHeight" Value="36" />
-            <Setter Property="Padding" Value="14,7" />
-            <Setter Property="Margin" Value="0,0,8,0" />
+            <Setter Property="MinHeight" Value="32" />
+            <Setter Property="Padding" Value="11,5" />
+            <Setter Property="Margin" Value="0,0,6,0" />
             <Setter Property="Background" Value="#293342" />
             <Setter Property="Foreground" Value="#F6F8FA" />
             <Setter Property="BorderBrush" Value="#465469" />
             <Setter Property="BorderThickness" Value="1" />
             <Setter Property="FontWeight" Value="SemiBold" />
-            <Style.Triggers>
-                <Trigger Property="IsMouseOver" Value="True">
-                    <Setter Property="Background" Value="#344154" />
+            <Setter Property="HorizontalContentAlignment" Value="Center" />
+            <Setter Property="VerticalContentAlignment" Value="Center" />
+            <Setter Property="Template" Value="{StaticResource SoundrelButtonTemplate}" />
+        </Style>
+
+        <Style x:Key="PresetComboBoxItemStyle" TargetType="ComboBoxItem">
+            <Setter Property="Background" Value="#202731" />
+            <Setter Property="Foreground" Value="#E8EDF2" />
+            <Setter Property="Padding" Value="7,4" />
+            <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ComboBoxItem">
+                        <Border x:Name="ItemBorder" Background="{TemplateBinding Background}"
+                                BorderBrush="Transparent" BorderThickness="1" Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                              VerticalAlignment="{TemplateBinding VerticalContentAlignment}"
+                                              Content="{TemplateBinding Content}"
+                                              ContentTemplate="{TemplateBinding ContentTemplate}"
+                                              TextElement.Foreground="{TemplateBinding Foreground}" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsHighlighted" Value="True">
+                                <Setter TargetName="ItemBorder" Property="Background" Value="#176B57" />
+                                <Setter TargetName="ItemBorder" Property="BorderBrush" Value="#78E0BE" />
+                                <Setter Property="Foreground" Value="#FFFFFF" />
+                            </Trigger>
+                            <Trigger Property="IsSelected" Value="True">
+                                <Setter TargetName="ItemBorder" Property="Background" Value="#245A50" />
+                                <Setter TargetName="ItemBorder" Property="BorderBrush" Value="#4FC3A1" />
+                                <Setter Property="Foreground" Value="#FFFFFF" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Opacity" Value="0.58" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <ControlTemplate x:Key="PresetEditableTextBoxTemplate" TargetType="TextBox">
+            <Border x:Name="PresetTextBoxBorder" Background="#202731"
+                    BorderBrush="{TemplateBinding BorderBrush}"
+                    BorderThickness="{TemplateBinding BorderThickness}"
+                    CornerRadius="2" SnapsToDevicePixels="True">
+                <ScrollViewer x:Name="PART_ContentHost"
+                              Margin="{TemplateBinding Padding}"
+                              HorizontalScrollBarVisibility="{TemplateBinding ScrollViewer.HorizontalScrollBarVisibility}"
+                              VerticalScrollBarVisibility="{TemplateBinding ScrollViewer.VerticalScrollBarVisibility}"
+                              Focusable="False" />
+            </Border>
+            <ControlTemplate.Triggers>
+                <Trigger Property="IsKeyboardFocusWithin" Value="True">
+                    <Setter TargetName="PresetTextBoxBorder" Property="BorderBrush" Value="#D1A947" />
                 </Trigger>
                 <Trigger Property="IsEnabled" Value="False">
-                    <Setter Property="Opacity" Value="0.58" />
+                    <Setter TargetName="PresetTextBoxBorder" Property="Opacity" Value="0.58" />
                 </Trigger>
-            </Style.Triggers>
+            </ControlTemplate.Triggers>
+        </ControlTemplate>
+
+        <Style x:Key="PresetComboBoxToggleButtonStyle" TargetType="ToggleButton">
+            <Setter Property="Width" Value="23" />
+            <Setter Property="Background" Value="#202731" />
+            <Setter Property="Foreground" Value="#98A5B5" />
+            <Setter Property="BorderBrush" Value="#465469" />
+            <Setter Property="BorderThickness" Value="1,0,0,0" />
+            <Setter Property="Focusable" Value="False" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ToggleButton">
+                        <Border x:Name="ToggleBorder" Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}">
+                            <Grid>
+                                <Path x:Name="DropDownArrow" Data="M 0,0 L 4,4 L 8,0"
+                                      Width="8" Height="5" HorizontalAlignment="Center" VerticalAlignment="Center"
+                                      Stroke="{TemplateBinding Foreground}" StrokeThickness="1.5"
+                                      StrokeLineJoin="Round" RenderTransformOrigin="0.5,0.5" />
+                            </Grid>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="ToggleBorder" Property="BorderBrush" Value="#91B0C9" />
+                                <Setter TargetName="DropDownArrow" Property="Stroke" Value="#D8E7F2" />
+                            </Trigger>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="DropDownArrow" Property="RenderTransform">
+                                    <Setter.Value>
+                                        <RotateTransform Angle="180" />
+                                    </Setter.Value>
+                                </Setter>
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter TargetName="ToggleBorder" Property="Opacity" Value="0.58" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <ControlTemplate x:Key="PresetComboBoxTemplate" TargetType="ComboBox">
+            <Grid SnapsToDevicePixels="True">
+                <Border x:Name="PresetComboBoxBorder" Background="{TemplateBinding Background}"
+                        BorderBrush="{TemplateBinding BorderBrush}"
+                        BorderThickness="{TemplateBinding BorderThickness}"
+                        CornerRadius="3">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="23" />
+                        </Grid.ColumnDefinitions>
+                        <TextBox x:Name="PART_EditableTextBox" Grid.Column="0"
+                                 Template="{StaticResource PresetEditableTextBoxTemplate}"
+                                 Text="{Binding Text, RelativeSource={RelativeSource TemplatedParent}, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                 Foreground="{TemplateBinding Foreground}"
+                                 Background="#202731" BorderBrush="Transparent" BorderThickness="0"
+                                 Padding="{TemplateBinding Padding}"
+                                 TextWrapping="NoWrap"
+                                 ScrollViewer.HorizontalScrollBarVisibility="Hidden"
+                                 ScrollViewer.VerticalScrollBarVisibility="Hidden"
+                                 CaretBrush="#4FC3A1" SelectionBrush="#176B57" SelectionTextBrush="#FFFFFF"
+                                 IsReadOnly="{TemplateBinding IsReadOnly}"
+                                 HorizontalContentAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                 VerticalContentAlignment="{TemplateBinding VerticalContentAlignment}"
+                                 Visibility="Visible" />
+                        <ContentPresenter x:Name="ContentSite" Grid.Column="0"
+                                          Content="{TemplateBinding SelectionBoxItem}"
+                                          ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}"
+                                          ContentStringFormat="{TemplateBinding SelectionBoxItemStringFormat}"
+                                          HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                          VerticalAlignment="{TemplateBinding VerticalContentAlignment}"
+                                          Margin="{TemplateBinding Padding}"
+                                          Visibility="Collapsed" />
+                        <ToggleButton x:Name="PART_DropDownToggle" Grid.Column="1"
+                                      Style="{StaticResource PresetComboBoxToggleButtonStyle}"
+                                      IsChecked="{Binding IsDropDownOpen, RelativeSource={RelativeSource TemplatedParent}, Mode=TwoWay}"
+                                      ClickMode="Press" />
+                    </Grid>
+                </Border>
+                <Popup x:Name="PART_Popup" Placement="Bottom" AllowsTransparency="True"
+                       Focusable="False"
+                       IsOpen="{TemplateBinding IsDropDownOpen}">
+                    <Border Background="#202731" BorderBrush="#465469" BorderThickness="1"
+                            CornerRadius="3" MinWidth="{Binding ActualWidth, RelativeSource={RelativeSource TemplatedParent}}">
+                        <ScrollViewer MaxHeight="{TemplateBinding MaxDropDownHeight}"
+                                      Background="#202731" Focusable="False"
+                                      HorizontalScrollBarVisibility="Disabled"
+                                      VerticalScrollBarVisibility="Auto">
+                            <ItemsPresenter KeyboardNavigation.DirectionalNavigation="Contained" />
+                        </ScrollViewer>
+                    </Border>
+                </Popup>
+            </Grid>
+            <ControlTemplate.Triggers>
+                <Trigger Property="IsEditable" Value="False">
+                    <Setter TargetName="PART_EditableTextBox" Property="Visibility" Value="Collapsed" />
+                    <Setter TargetName="ContentSite" Property="Visibility" Value="Visible" />
+                </Trigger>
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter TargetName="PresetComboBoxBorder" Property="BorderBrush" Value="#91B0C9" />
+                </Trigger>
+                <Trigger Property="IsKeyboardFocusWithin" Value="True">
+                    <Setter TargetName="PresetComboBoxBorder" Property="BorderBrush" Value="#D1A947" />
+                </Trigger>
+                <Trigger Property="IsEnabled" Value="False">
+                    <Setter TargetName="PresetComboBoxBorder" Property="Opacity" Value="0.58" />
+                </Trigger>
+            </ControlTemplate.Triggers>
+        </ControlTemplate>
+
+        <Style x:Key="PresetComboBoxStyle" TargetType="ComboBox">
+            <Setter Property="Background" Value="#202731" />
+            <Setter Property="Foreground" Value="#F6F8FA" />
+            <Setter Property="BorderBrush" Value="#465469" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Padding" Value="6,2" />
+            <Setter Property="Template" Value="{StaticResource PresetComboBoxTemplate}" />
         </Style>
 
         <Style x:Key="PlayNowButtonStyle" TargetType="Button" BasedOn="{StaticResource ActionButtonStyle}">
@@ -70,33 +280,150 @@
             <Setter Property="BorderBrush" Value="#D1A947" />
         </Style>
 
-        <Style x:Key="HardCutChoiceButtonStyle" TargetType="Button" BasedOn="{StaticResource ActionButtonStyle}">
-            <Setter Property="Background" Value="#24352F" />
-            <Setter Property="BorderBrush" Value="#426453" />
-            <Style.Triggers>
-                <DataTrigger Binding="{Binding DataContext.IsHardCutSelected, RelativeSource={RelativeSource AncestorType={x:Type Window}}}" Value="True">
-                    <Setter Property="Background" Value="#176B57" />
-                    <Setter Property="BorderBrush" Value="#78E0BE" />
-                    <Setter Property="BorderThickness" Value="2" />
-                </DataTrigger>
-            </Style.Triggers>
-        </Style>
-
-        <Style x:Key="CrossfadeChoiceButtonStyle" TargetType="Button" BasedOn="{StaticResource ActionButtonStyle}">
-            <Setter Property="Background" Value="#263447" />
-            <Setter Property="BorderBrush" Value="#4D6F91" />
-            <Style.Triggers>
-                <DataTrigger Binding="{Binding DataContext.IsCrossfadeSelected, RelativeSource={RelativeSource AncestorType={x:Type Window}}}" Value="True">
-                    <Setter Property="Background" Value="#24577D" />
-                    <Setter Property="BorderBrush" Value="#9BD0FF" />
-                    <Setter Property="BorderThickness" Value="2" />
-                </DataTrigger>
-            </Style.Triggers>
+        <Style x:Key="StopAllButtonStyle" TargetType="Button" BasedOn="{StaticResource ActionButtonStyle}">
+            <Setter Property="Background" Value="#6B2932" />
+            <Setter Property="BorderBrush" Value="#D86B76" />
+            <Setter Property="Foreground" Value="#FFE8EA" />
         </Style>
 
         <Style x:Key="MasterFadeButtonStyle" TargetType="Button" BasedOn="{StaticResource ActionButtonStyle}">
             <Setter Property="Background" Value="#253A46" />
-            <Setter Property="BorderBrush" Value="#6A9BB5" />
+            <Setter Property="BorderBrush" Value="#9BD0FF" />
+        </Style>
+
+        <Style x:Key="AmbienceTileActionStyle" TargetType="Button" BasedOn="{StaticResource ActionButtonStyle}">
+            <Setter Property="MinHeight" Value="0" />
+            <Setter Property="Width" Value="148" />
+            <Setter Property="Height" Value="66" />
+            <Setter Property="Padding" Value="7,5" />
+            <Setter Property="Margin" Value="0" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderBrush" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="HorizontalContentAlignment" Value="Left" />
+            <Setter Property="VerticalContentAlignment" Value="Top" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Grid Background="Transparent">
+                            <Border x:Name="TileHoverOverlay" Background="#FFFFFF" Opacity="0" IsHitTestVisible="False" />
+                            <Border x:Name="TilePressedOverlay" Background="#FFFFFF" Opacity="0" IsHitTestVisible="False" />
+                            <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                              VerticalAlignment="{TemplateBinding VerticalContentAlignment}"
+                                              Margin="{TemplateBinding Padding}"
+                                              RecognizesAccessKey="True"
+                                              Content="{TemplateBinding Content}"
+                                              ContentTemplate="{TemplateBinding ContentTemplate}"
+                                              ContentStringFormat="{TemplateBinding ContentStringFormat}"
+                                              TextElement.Foreground="{TemplateBinding Foreground}"
+                                              TextElement.FontFamily="{TemplateBinding FontFamily}"
+                                              TextElement.FontSize="{TemplateBinding FontSize}"
+                                              TextElement.FontWeight="{TemplateBinding FontWeight}" />
+                        </Grid>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="TileHoverOverlay" Property="Opacity" Value="0.06" />
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="TilePressedOverlay" Property="Opacity" Value="0.16" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Opacity" Value="0.58" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="MasterPanelStyle" TargetType="Border" BasedOn="{StaticResource PanelStyle}">
+            <Setter Property="Background" Value="#202C3B" />
+            <Setter Property="BorderBrush" Value="#5C9FCC" />
+            <Setter Property="BorderThickness" Value="2" />
+        </Style>
+
+        <Style x:Key="TreeExpanderToggleButtonStyle" TargetType="ToggleButton">
+            <Setter Property="Width" Value="22" />
+            <Setter Property="Height" Value="30" />
+            <Setter Property="Focusable" Value="False" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Foreground" Value="#8FA6BC" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ToggleButton">
+                        <Grid Background="Transparent">
+                            <TextBlock x:Name="ArrowGlyph" Text="▸" FontSize="17" FontWeight="Bold"
+                                       Foreground="{TemplateBinding Foreground}" HorizontalAlignment="Center"
+                                       VerticalAlignment="Center" />
+                        </Grid>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="ArrowGlyph" Property="Text" Value="▾" />
+                            </Trigger>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="ArrowGlyph" Property="Foreground" Value="#B9D9F5" />
+                            </Trigger>
+                            <Trigger Property="IsKeyboardFocusWithin" Value="True">
+                                <Setter TargetName="ArrowGlyph" Property="Foreground" Value="#D1A947" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="QueueScrollBarButtonStyle" TargetType="RepeatButton">
+            <Setter Property="Focusable" Value="False" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="RepeatButton">
+                        <Border Background="Transparent" />
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="QueueScrollBarThumbStyle" TargetType="Thumb">
+            <Setter Property="Background" Value="#586D82" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Thumb">
+                        <Border Background="{TemplateBinding Background}" CornerRadius="3" />
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="QueueScrollBarStyle" TargetType="ScrollBar">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="Foreground" Value="#586D82" />
+            <Setter Property="Height" Value="6" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ScrollBar">
+                        <Grid Background="{TemplateBinding Background}">
+                            <Track x:Name="PART_Track" Orientation="{TemplateBinding Orientation}"
+                                   Maximum="{TemplateBinding Maximum}" Minimum="{TemplateBinding Minimum}"
+                                   Value="{TemplateBinding Value}" ViewportSize="{TemplateBinding ViewportSize}">
+                                <Track.DecreaseRepeatButton>
+                                    <RepeatButton Command="{x:Static ScrollBar.LineLeftCommand}"
+                                                  CommandTarget="{Binding RelativeSource={RelativeSource TemplatedParent}}"
+                                                  Style="{StaticResource QueueScrollBarButtonStyle}" />
+                                </Track.DecreaseRepeatButton>
+                                <Track.Thumb>
+                                    <Thumb Style="{StaticResource QueueScrollBarThumbStyle}" />
+                                </Track.Thumb>
+                                <Track.IncreaseRepeatButton>
+                                    <RepeatButton Command="{x:Static ScrollBar.LineRightCommand}"
+                                                  CommandTarget="{Binding RelativeSource={RelativeSource TemplatedParent}}"
+                                                  Style="{StaticResource QueueScrollBarButtonStyle}" />
+                                </Track.IncreaseRepeatButton>
+                            </Track>
+                        </Grid>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
         </Style>
 
         <Style TargetType="ListBox">
@@ -113,35 +440,124 @@
 
         <Style TargetType="TreeViewItem">
             <Setter Property="Foreground" Value="#E8EDF2" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="Focusable" Value="True" />
+            <Setter Property="Margin" Value="0,1" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="TreeViewItem">
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                            </Grid.RowDefinitions>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="22" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <ToggleButton x:Name="Expander" Grid.Row="0" Grid.Column="0"
+                                          Style="{StaticResource TreeExpanderToggleButtonStyle}"
+                                          Foreground="{TemplateBinding Foreground}"
+                                          IsChecked="{Binding IsExpanded, RelativeSource={RelativeSource TemplatedParent}, Mode=TwoWay}"
+                                          />
+                            <Border x:Name="ItemBorder" Grid.Row="0" Grid.Column="1">
+                                <Border.Style>
+                                    <Style TargetType="Border">
+                                        <Setter Property="Background" Value="Transparent" />
+                                        <Setter Property="BorderBrush" Value="Transparent" />
+                                        <Setter Property="BorderThickness" Value="1" />
+                                        <Setter Property="CornerRadius" Value="4" />
+                                        <Setter Property="Padding" Value="4,2" />
+                                        <Style.Triggers>
+                                            <Trigger Property="IsMouseOver" Value="True">
+                                                <Setter Property="Background" Value="#293342" />
+                                                <Setter Property="BorderBrush" Value="#465469" />
+                                            </Trigger>
+                                            <DataTrigger Binding="{Binding IsSelected, RelativeSource={RelativeSource AncestorType=TreeViewItem}}" Value="True">
+                                                <Setter Property="Background" Value="#176B57" />
+                                                <Setter Property="BorderBrush" Value="#78E0BE" />
+                                                <Setter Property="BorderThickness" Value="2" />
+                                            </DataTrigger>
+                                            <DataTrigger Binding="{Binding IsKeyboardFocusWithin, RelativeSource={RelativeSource AncestorType=TreeViewItem}}" Value="True">
+                                                <Setter Property="BorderBrush" Value="#D1A947" />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </Border.Style>
+                                <ContentPresenter ContentSource="Header" VerticalAlignment="Center" />
+                            </Border>
+                            <ItemsPresenter x:Name="ItemsHost" Grid.Row="1" Grid.ColumnSpan="2" Margin="18,0,0,0" />
+                        </Grid>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="HasItems" Value="False">
+                                <Setter TargetName="Expander" Property="Visibility" Value="Collapsed" />
+                            </Trigger>
+                            <Trigger Property="IsExpanded" Value="False">
+                                <Setter TargetName="ItemsHost" Property="Visibility" Value="Collapsed" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
         </Style>
 
         <HierarchicalDataTemplate DataType="{x:Type vm:LibraryTreeNode}"
                                   ItemsSource="{Binding Children}">
-            <Border x:Name="NodeBorder" Padding="4,3" CornerRadius="3">
-                <TextBlock x:Name="NodeName" Text="{Binding Name}" FontSize="14" Foreground="#E8EDF2" />
+            <Border x:Name="NodeBorder" Padding="4,3" CornerRadius="3"
+                    PreviewMouseLeftButtonDown="LibraryNodeHeader_PreviewMouseLeftButtonDown">
+                <Border.Style>
+                    <Style TargetType="Border">
+                        <Setter Property="Background" Value="Transparent" />
+                        <Setter Property="BorderBrush" Value="Transparent" />
+                        <Setter Property="BorderThickness" Value="1" />
+                        <Style.Triggers>
+                            <DataTrigger Binding="{Binding IsPlaylist}" Value="False">
+                                <Setter Property="Background" Value="#182738" />
+                                <Setter Property="BorderBrush" Value="#29425C" />
+                            </DataTrigger>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter Property="Background" Value="#293342" />
+                                <Setter Property="BorderBrush" Value="#465469" />
+                            </Trigger>
+                            <DataTrigger Binding="{Binding RelativeSource={RelativeSource AncestorType=TreeViewItem}, Path=IsSelected}" Value="True">
+                                <Setter Property="Background" Value="#176B57" />
+                                <Setter Property="BorderBrush" Value="#78E0BE" />
+                            </DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </Border.Style>
+                <TextBlock x:Name="NodeName" Text="{Binding Name}" FontSize="16"
+                           TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
             </Border>
             <HierarchicalDataTemplate.Triggers>
                 <DataTrigger Binding="{Binding IsPlaylist}" Value="False">
-                    <Setter TargetName="NodeName" Property="FontWeight" Value="SemiBold" />
-                    <Setter TargetName="NodeName" Property="Foreground" Value="#AFC5DB" />
+                    <Setter TargetName="NodeName" Property="FontWeight" Value="Bold" />
+                    <Setter TargetName="NodeName" Property="FontSize" Value="17" />
+                    <Setter TargetName="NodeName" Property="Foreground" Value="#8FC7FF" />
                 </DataTrigger>
                 <DataTrigger Binding="{Binding IsPlaylist}" Value="True">
-                    <Setter TargetName="NodeBorder" Property="Margin" Value="4,0,0,0" />
+                    <Setter TargetName="NodeBorder" Property="Margin" Value="8,0,0,0" />
+                    <Setter TargetName="NodeName" Property="Foreground" Value="#E8EDF2" />
+                </DataTrigger>
+                <DataTrigger Binding="{Binding RelativeSource={RelativeSource AncestorType=TreeViewItem}, Path=IsSelected}" Value="True">
+                    <Setter TargetName="NodeName" Property="Foreground" Value="#FFFFFF" />
                 </DataTrigger>
             </HierarchicalDataTemplate.Triggers>
         </HierarchicalDataTemplate>
     </Window.Resources>
 
-    <Grid Margin="18">
+    <Grid Margin="16">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
             <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
-        <Border Grid.Row="0" Style="{StaticResource PanelStyle}" Padding="14" Margin="0,0,0,12">
+        <Border Grid.Row="0" Style="{StaticResource PanelStyle}" Padding="12" Margin="0,0,0,10">
             <Grid>
                 <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
                     <RowDefinition Height="Auto" />
                     <RowDefinition Height="Auto" />
                 </Grid.RowDefinitions>
@@ -156,18 +572,15 @@
                     <TextBlock Text="Local sound library" Style="{StaticResource MutedTextStyle}" FontSize="11" />
                 </StackPanel>
                 <Border Grid.Row="0" Grid.Column="1" Background="#11151B" BorderBrush="#303A48" BorderThickness="1"
-                        CornerRadius="4" Padding="10,7" Margin="0,0,12,0" VerticalAlignment="Center">
-                    <TextBlock Text="{Binding LibraryPathDisplay}" TextTrimming="CharacterEllipsis"
-                               ToolTip="{Binding SelectedLibraryPath}" />
+                        CornerRadius="4" Padding="9,6" Margin="0,0,10,0" VerticalAlignment="Center">
+                    <TextBlock Text="{Binding LibraryPathDisplay}" TextTrimming="CharacterEllipsis" ToolTip="{Binding SelectedLibraryPath}" />
                 </Border>
                 <Button Grid.Row="0" Grid.Column="2" Content="Browse..." Style="{StaticResource ActionButtonStyle}"
                         IsEnabled="{Binding IsNotBusy}" Click="Browse_Click" />
                 <Button Grid.Row="0" Grid.Column="3" Content="Rescan" Style="{StaticResource ActionButtonStyle}"
                         Margin="0" IsEnabled="{Binding CanRescan}" Click="Rescan_Click" />
-
-                <Border Grid.Row="1" Grid.ColumnSpan="4" CornerRadius="4" Padding="10,7" Margin="0,10,0,0"
-                        MaxHeight="76" ToolTip="{Binding StatusText}"
-                        AutomationProperties.Name="Library status">
+                <Border Grid.Row="1" Grid.ColumnSpan="4" CornerRadius="4" Padding="8,4" Margin="0,7,0,0"
+                        MaxHeight="48" ToolTip="{Binding StatusText}" AutomationProperties.Name="Library status">
                     <Border.Style>
                         <Style TargetType="Border">
                             <Setter Property="Background" Value="#14251F" />
@@ -185,9 +598,26 @@
                         <TextBlock DockPanel.Dock="Left" Text="STATUS" FontSize="11" FontWeight="Bold"
                                    Foreground="{StaticResource AccentBrush}" Margin="0,1,12,0" />
                         <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
-                            <TextBlock Text="{Binding StatusText}" TextWrapping="Wrap"
-                                       AutomationProperties.LiveSetting="Polite" />
+                            <TextBlock Text="{Binding StatusText}" TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite" />
                         </ScrollViewer>
+                    </DockPanel>
+                </Border>
+                <Border Grid.Row="2" Grid.ColumnSpan="4" Background="#382326" BorderBrush="#A55762" BorderThickness="1"
+                        CornerRadius="4" Padding="8" Margin="0,7,0,0" AutomationProperties.LiveSetting="Assertive">
+                    <Border.Style>
+                        <Style TargetType="Border">
+                            <Setter Property="Visibility" Value="Collapsed" />
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding HasPlaybackError}" Value="True">
+                                    <Setter Property="Visibility" Value="Visible" />
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </Border.Style>
+                    <DockPanel>
+                        <TextBlock DockPanel.Dock="Left" Text="PLAYBACK ERROR" Foreground="#FFBBC1" FontSize="11"
+                                   FontWeight="Bold" Margin="0,0,10,0" />
+                        <TextBlock Text="{Binding LatestPlaybackErrorDisplay}" Foreground="#FFDDE0" TextWrapping="Wrap" />
                     </DockPanel>
                 </Border>
             </Grid>
@@ -195,24 +625,23 @@
 
         <Grid Grid.Row="1">
             <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="3*" MinWidth="250" />
-                <ColumnDefinition Width="5*" MinWidth="390" />
-                <ColumnDefinition Width="4*" MinWidth="320" />
+                <ColumnDefinition Width="2*" MinWidth="210" />
+                <ColumnDefinition Width="3*" MinWidth="300" />
+                <ColumnDefinition Width="5*" MinWidth="450" />
             </Grid.ColumnDefinitions>
 
-            <Border Grid.Column="0" Style="{StaticResource PanelStyle}" Margin="0,0,12,0">
+            <Border Grid.Column="0" Style="{StaticResource PanelStyle}" Margin="0,0,10,0">
                 <DockPanel>
                     <StackPanel DockPanel.Dock="Top">
                         <TextBlock Text="Library" Style="{StaticResource SectionTitleStyle}" />
                         <TextBlock Text="Groups are bold. Select a playlist to see its tracks."
-                                   Style="{StaticResource MutedTextStyle}" Margin="0,0,0,10" />
+                                   Style="{StaticResource MutedTextStyle}" FontSize="11" Margin="0,0,0,7" />
                     </StackPanel>
-                    <TreeView ItemsSource="{Binding LibraryNodes}"
-                              SelectedItemChanged="LibraryTree_SelectedItemChanged" />
+                        <TreeView ItemsSource="{Binding LibraryNodes}" SelectedItemChanged="LibraryTree_SelectedItemChanged" />
                 </DockPanel>
             </Border>
 
-            <Border Grid.Column="1" Style="{StaticResource PanelStyle}" Margin="0,0,12,0">
+            <Border Grid.Column="1" Style="{StaticResource PanelStyle}" Margin="0,0,10,0">
                 <Grid>
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto" />
@@ -221,56 +650,53 @@
                     </Grid.RowDefinitions>
                     <StackPanel Grid.Row="0">
                         <TextBlock Text="Selected Playlist" Style="{StaticResource MutedTextStyle}" FontSize="12" />
-                        <TextBlock Text="{Binding SelectedPlaylistName}" FontSize="24" FontWeight="SemiBold" Foreground="#F6F8FA"
-                                   TextTrimming="CharacterEllipsis" Margin="0,2,0,12" />
-                     </StackPanel>
-                    <StackPanel Grid.Row="1" Margin="0,0,0,14">
+                        <TextBlock Text="{Binding SelectedPlaylistName}" FontSize="22" FontWeight="SemiBold" Foreground="#F6F8FA"
+                                   TextTrimming="CharacterEllipsis" ToolTip="{Binding SelectedPlaylistName}" Margin="0,2,0,9" />
+                    </StackPanel>
+                    <StackPanel Grid.Row="1" Margin="0,0,0,10">
                         <TextBlock Text="Immediate transition" FontWeight="SemiBold" Foreground="#F6F8FA" />
-                        <TextBlock Text="Choose how Play Now switches playlists. Crossfade is fixed at 2 seconds."
-                                   Style="{StaticResource MutedTextStyle}" FontSize="11" Margin="0,2,0,7" />
+                        <TextBlock Text="Used by playlist and track Play Now; crossfades use the configured medium fade."
+                                   Style="{StaticResource MutedTextStyle}" FontSize="11" Margin="0,2,0,5" />
                         <WrapPanel>
-                            <Button Content="Hard Cut" Style="{StaticResource HardCutChoiceButtonStyle}"
-                                    Click="HardCut_Click"
-                                    AutomationProperties.Name="Immediate transition: Hard Cut"
-                                    AutomationProperties.HelpText="Select Hard Cut for an immediate playlist change without overlap." />
-                            <Button Content="Crossfade" Style="{StaticResource CrossfadeChoiceButtonStyle}"
-                                    Click="Crossfade_Click"
-                                    AutomationProperties.Name="Immediate transition: Crossfade"
-                                    AutomationProperties.HelpText="Select Crossfade for a fixed 2-second immediate transition." />
-                        </WrapPanel>
-                        <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                            <Button Content="{Binding TransitionModeLabel}" Style="{StaticResource ActionButtonStyle}"
+                                    Click="TransitionModeToggle_Click" ToolTip="Switch between Hard Cut and Crossfade."
+                                    AutomationProperties.Name="{Binding TransitionModeLabel}"
+                                    AutomationProperties.HelpText="Toggle the immediate transition mode used by Play Now." />
                             <Button Content="{Binding PlayNowLabel}" Style="{StaticResource PlayNowButtonStyle}"
-                                    IsEnabled="{Binding CanPlayNow}" Click="PlayNow_Click"
-                                    AutomationProperties.Name="Play Now" />
+                                    IsEnabled="{Binding CanPlayNow}" Click="PlayNow_Click" AutomationProperties.Name="Play Now" />
                             <Button Content="After Current" Style="{StaticResource AfterCurrentButtonStyle}"
                                     IsEnabled="{Binding CanPlayAfterCurrent}" Click="AfterCurrent_Click" />
-                        </StackPanel>
+                        </WrapPanel>
                     </StackPanel>
-                    <ListBox Grid.Row="2" ItemsSource="{Binding SelectedTracks}" ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                    <ListBox Grid.Row="2" ItemsSource="{Binding SelectedTracks}"
+                             ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                             ScrollViewer.VerticalScrollBarVisibility="Auto">
                         <ListBox.ItemContainerStyle>
                             <Style TargetType="ListBoxItem">
                                 <Setter Property="HorizontalContentAlignment" Value="Stretch" />
                                 <Setter Property="Padding" Value="0" />
-                                <Setter Property="Margin" Value="0,0,0,6" />
+                                <Setter Property="Margin" Value="0,0,0,5" />
                             </Style>
                         </ListBox.ItemContainerStyle>
                         <ListBox.ItemTemplate>
                             <DataTemplate>
-                                <Border Background="#222A35" BorderBrush="#303A48" BorderThickness="1"
-                                        CornerRadius="4" Padding="10,7">
+                                <Border Background="#222A35" BorderBrush="#303A48" BorderThickness="1" CornerRadius="4" Padding="8,5">
                                     <Grid>
                                         <Grid.ColumnDefinitions>
                                             <ColumnDefinition Width="*" />
                                             <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="Auto" />
                                         </Grid.ColumnDefinitions>
-                                         <TextBlock Grid.Column="0" Text="{Binding Name}" FontSize="14"
-                                                    VerticalAlignment="Center" TextTrimming="CharacterEllipsis"
-                                                    ToolTip="{Binding FilePath}" Foreground="#E8EDF2" />
-                                         <Button Grid.Column="1" Content="Queue"
-                                                 IsEnabled="{Binding DataContext.CanQueueTrack, RelativeSource={RelativeSource AncestorType=Window}}"
-                                                 Click="QueueTrack_Click"
-                                                 Style="{StaticResource ActionButtonStyle}" MinHeight="30"
-                                                 Padding="10,4" Margin="12,0,0,0" />
+                                        <TextBlock Grid.Column="0" Text="{Binding Name}" FontSize="14" VerticalAlignment="Center"
+                                                   TextTrimming="CharacterEllipsis" ToolTip="{Binding FilePath}" />
+                                        <Button Grid.Column="1" Content="Play Now" Style="{StaticResource PlayNowButtonStyle}"
+                                                MinHeight="28" Padding="8,3" Margin="8,0,4,0"
+                                                IsEnabled="{Binding DataContext.CanPlayTrackNow, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                Click="TrackPlayNow_Click" ToolTip="Play this exact track now." />
+                                        <Button Grid.Column="2" Content="Queue" Style="{StaticResource ActionButtonStyle}"
+                                                MinHeight="28" Padding="8,3" Margin="0"
+                                                IsEnabled="{Binding DataContext.CanQueueTrack, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                Click="QueueTrack_Click" />
                                     </Grid>
                                 </Border>
                             </DataTemplate>
@@ -279,303 +705,345 @@
                 </Grid>
             </Border>
 
-            <Border Grid.Column="2" Style="{StaticResource PanelStyle}">
-                <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
-                    <StackPanel>
-                         <TextBlock Text="Session" Style="{StaticResource SectionTitleStyle}" />
-                         <Grid Margin="0,0,0,16">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="Auto" />
-                                <ColumnDefinition Width="*" />
-                            </Grid.ColumnDefinitions>
-                            <Grid.RowDefinitions>
-                                  <RowDefinition Height="Auto" />
-                                  <RowDefinition Height="Auto" />
-                                  <RowDefinition Height="Auto" />
-                                  <RowDefinition Height="Auto" />
-                                  <RowDefinition Height="Auto" />
-                                  <RowDefinition Height="Auto" />
-                                  <RowDefinition Height="Auto" />
-                                  <RowDefinition Height="Auto" />
-                                  <RowDefinition Height="Auto" />
-                                  <RowDefinition Height="Auto" />
-                             </Grid.RowDefinitions>
-                             <TextBlock Grid.Row="0" Grid.Column="0" Text="Now playing" Foreground="{StaticResource MutedBrush}" Margin="0,0,12,6" />
-                             <TextBlock Grid.Row="0" Grid.Column="1" Text="{Binding CurrentTrackDisplayName}"
-                                        Foreground="#F6F8FA" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"
-                                        ToolTip="{Binding CurrentTrack.FilePath}" Margin="0,0,0,6" />
-                             <TextBlock Grid.Row="1" Grid.Column="0" Text="File" Foreground="{StaticResource MutedBrush}" Margin="0,0,12,6" />
-                             <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding CurrentFileName}" Foreground="#E8EDF2"
-                                        TextTrimming="CharacterEllipsis" ToolTip="{Binding CurrentTrack.FilePath}" Margin="0,0,0,6" />
-                             <TextBlock Grid.Row="2" Grid.Column="0" Text="Current playlist" Foreground="{StaticResource MutedBrush}" Margin="0,0,12,6" />
-                             <TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding CurrentPlaylistDisplay}" Foreground="#E8EDF2" Margin="0,0,0,6" />
-                             <TextBlock Grid.Row="3" Grid.Column="0" Text="Active playlist" Foreground="{StaticResource MutedBrush}" Margin="0,0,12,6" />
-                             <TextBlock Grid.Row="3" Grid.Column="1" Text="{Binding ActivePlaylistDisplay}" Foreground="#E8EDF2" Margin="0,0,0,6" />
-                             <TextBlock Grid.Row="4" Grid.Column="0" Text="Pending playlist" Foreground="{StaticResource MutedBrush}" Margin="0,0,12,6" />
-                             <TextBlock Grid.Row="4" Grid.Column="1" Text="{Binding PendingPlaylistDisplay}" Foreground="#E8EDF2" Margin="0,0,0,6" />
-                             <TextBlock Grid.Row="5" Grid.Column="0" Text="State" Foreground="{StaticResource MutedBrush}" Margin="0,0,12,6" />
-                             <TextBlock Grid.Row="5" Grid.Column="1" Text="{Binding PlaybackStateDisplay}" Foreground="#E8EDF2" Margin="0,0,0,6" />
-                              <TextBlock Grid.Row="6" Grid.Column="0" Text="Elapsed / duration" Foreground="{StaticResource MutedBrush}" Margin="0,0,12,0" />
-                              <TextBlock Grid.Row="6" Grid.Column="1" Text="{Binding ProgressDisplay}" Foreground="#E8EDF2" />
-                              <TextBlock Grid.Row="7" Grid.Column="0" Text="Immediate mode" Foreground="{StaticResource MutedBrush}" Margin="0,6,12,0" />
-                              <TextBlock Grid.Row="7" Grid.Column="1" Text="{Binding PreferredImmediateTransitionMode}" Foreground="#E8EDF2" Margin="0,6,0,0"
-                                         ToolTip="The selected mode used by Play Now." />
-                              <TextBlock Grid.Row="8" Grid.Column="0" Text="Master output fade gain" Foreground="{StaticResource MutedBrush}" Margin="0,6,12,0" />
-                              <TextBlock Grid.Row="8" Grid.Column="1" Text="{Binding MasterGainDisplay}" Foreground="#E8EDF2" Margin="0,6,0,0"
-                                         ToolTip="Observed master output fade gain percentage; this is not the configured master volume." />
-                              <TextBlock Grid.Row="9" Grid.Column="0" Text="Master fade state" Foreground="{StaticResource MutedBrush}" Margin="0,6,12,0" />
-                              <TextBlock Grid.Row="9" Grid.Column="1" Text="{Binding MasterFadeStateDisplay}" Foreground="#E8EDF2" Margin="0,6,0,0"
-                                         ToolTip="Current state of the fixed-duration master output fade." />
-                          </Grid>
-
-                         <Border Background="#382326" BorderBrush="#A55762" BorderThickness="1"
-                                 CornerRadius="4" Padding="10" Margin="0,0,0,14"
-                                 AutomationProperties.LiveSetting="Assertive">
-                             <Border.Style>
-                                 <Style TargetType="Border">
-                                     <Setter Property="Visibility" Value="Collapsed" />
-                                     <Style.Triggers>
-                                         <DataTrigger Binding="{Binding HasPlaybackError}" Value="True">
-                                             <Setter Property="Visibility" Value="Visible" />
-                                         </DataTrigger>
-                                     </Style.Triggers>
-                                 </Style>
-                             </Border.Style>
-                             <StackPanel>
-                                 <TextBlock Text="PLAYBACK ERROR" Foreground="#FFBBC1" FontSize="11" FontWeight="Bold" Margin="0,0,0,4" />
-                                 <TextBlock Text="{Binding LatestPlaybackErrorDisplay}" Foreground="#FFDDE0" TextWrapping="Wrap" />
-                             </StackPanel>
-                         </Border>
-
-                         <TextBlock Text="Explicit Queue (FIFO)" FontWeight="SemiBold" Foreground="#F6F8FA" Margin="0,0,0,8" />
-                         <TextBlock Text="Empty" Margin="0,0,0,14">
-                             <TextBlock.Style>
-                                 <Style TargetType="TextBlock" BasedOn="{StaticResource MutedTextStyle}">
-                                     <Style.Triggers>
-                                         <DataTrigger Binding="{Binding HasExplicitQueue}" Value="True">
-                                             <Setter Property="Visibility" Value="Collapsed" />
-                                         </DataTrigger>
-                                     </Style.Triggers>
-                                 </Style>
-                             </TextBlock.Style>
-                         </TextBlock>
-                         <ItemsControl ItemsSource="{Binding ExplicitQueue}" Margin="0,0,0,14">
-                             <ItemsControl.ItemTemplate>
-                                 <DataTemplate>
-                                     <Border Background="#222A35" BorderBrush="#303A48" BorderThickness="1"
-                                             CornerRadius="4" Padding="9,7" Margin="0,0,0,6">
-                                         <StackPanel>
-                                             <TextBlock Text="{Binding Track.Name}" Foreground="#E8EDF2" FontWeight="SemiBold"
-                                                        TextTrimming="CharacterEllipsis" ToolTip="{Binding Track.FilePath}" />
-                                             <TextBlock Text="{Binding SourcePlaylist.Name, StringFormat=From {0}}"
-                                                        Foreground="{StaticResource MutedBrush}" FontSize="11" />
-                                         </StackPanel>
-                                     </Border>
-                                 </DataTemplate>
-                             </ItemsControl.ItemTemplate>
-                         </ItemsControl>
-
-                         <Separator Background="#303A48" Margin="0,0,0,14" />
-                         <TextBlock Text="Ambience" Style="{StaticResource SectionTitleStyle}" />
-                         <TextBlock Text="Each source loops independently. Play and Stop use a fixed, sample-counted 2-second fade. Play remains available during Fading Out to reverse smoothly."
-                                    Style="{StaticResource MutedTextStyle}" Margin="0,0,0,8" />
-                         <ItemsControl ItemsSource="{Binding AmbienceTracks}" Margin="0,0,0,16">
-                             <ItemsControl.ItemTemplate>
-                                 <DataTemplate>
-                                     <Border Background="#222A35" BorderBrush="#303A48" BorderThickness="1"
-                                             CornerRadius="4" Padding="8,7" Margin="0,0,0,6">
-                                         <Grid>
-                                             <Grid.RowDefinitions>
-                                                 <RowDefinition Height="Auto" />
-                                                 <RowDefinition Height="Auto" />
-                                             </Grid.RowDefinitions>
-                                             <Grid.ColumnDefinitions>
-                                                 <ColumnDefinition Width="*" />
-                                                 <ColumnDefinition Width="Auto" />
-                                                 <ColumnDefinition Width="Auto" />
-                                                 <ColumnDefinition Width="Auto" />
-                                             </Grid.ColumnDefinitions>
-                                             <TextBlock Grid.Row="0" Grid.Column="0" Text="{Binding Name}"
-                                                        TextTrimming="CharacterEllipsis" ToolTip="{Binding FilePath}"
-                                                        Foreground="#E8EDF2" FontWeight="SemiBold" />
-                                             <TextBlock Grid.Row="0" Grid.Column="1" Text="{Binding PlaybackStateLabel}"
-                                                        Foreground="{StaticResource MutedBrush}" Margin="8,0,8,0"
-                                                        VerticalAlignment="Center" />
-                                             <Button Grid.Row="0" Grid.Column="2" Content="Play"
-                                                     Style="{StaticResource PlayNowButtonStyle}" MinHeight="30"
-                                                     Padding="9,4" Margin="0,0,5,0" IsEnabled="{Binding CanPlay}"
-                                                     Click="AmbiencePlay_Click" ToolTip="Play this looping ambience source."
-                                                      AutomationProperties.Name="{Binding Name, StringFormat=Play ambience: {0}}"
-                                                     AutomationProperties.HelpText="Play this ambience source with its fixed 2-second fade." />
-                                             <Button Grid.Row="0" Grid.Column="3" Content="Stop"
-                                                     Style="{StaticResource ActionButtonStyle}" MinHeight="30"
-                                                     Padding="9,4" Margin="0" IsEnabled="{Binding CanStop}"
-                                                     Click="AmbienceStop_Click" ToolTip="Stop this ambience source."
-                                                      AutomationProperties.Name="{Binding Name, StringFormat=Stop ambience: {0}}"
-                                                     AutomationProperties.HelpText="Stop this ambience source with its fixed 2-second fade." />
-                                             <Slider Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="3"
-                                                     Minimum="0" Maximum="1" TickFrequency="0.1"
-                                                     IsSnapToTickEnabled="False" Margin="0,7,8,0"
-                                                     Value="{Binding Gain, Mode=OneWay}"
-                                                     PreviewMouseLeftButtonUp="AmbienceGainSlider_MouseLeftButtonUp"
-                                                     PreviewKeyUp="AmbienceGainSlider_KeyUp"
-                                                     ToolTip="Individual ambience gain, 0 to 100 percent."
-                                                     AutomationProperties.Name="{Binding Name, StringFormat=Gain for ambience: {0}}"
-                                                     AutomationProperties.HelpText="Adjust this source from 0 to 100 percent. The value is submitted when mouse or keyboard adjustment ends." />
-                                             <TextBlock Grid.Row="1" Grid.Column="3" Text="{Binding GainDisplay}"
-                                                        Foreground="#F6F8FA" FontWeight="SemiBold"
-                                                        HorizontalAlignment="Right" VerticalAlignment="Center"
-                                                        Margin="0,7,0,0" />
-                                         </Grid>
-                                     </Border>
-                                 </DataTemplate>
-                             </ItemsControl.ItemTemplate>
-                        </ItemsControl>
-
-                        <Separator Background="#303A48" Margin="0,0,0,14" />
-                        <TextBlock Text="In-App Scan Details" Style="{StaticResource SectionTitleStyle}" />
-                        <TextBlock Text="Scan errors and paths appear here in Soundrel; no terminal is required."
-                                   Style="{StaticResource MutedTextStyle}" Margin="0,0,0,8" />
-                        <Border Background="#121820" BorderBrush="#303A48" BorderThickness="1" CornerRadius="4"
-                                Padding="10" Margin="0,0,0,9">
-                            <TextBlock Text="{Binding StatusText}" TextWrapping="Wrap" />
-                        </Border>
-                        <ItemsControl ItemsSource="{Binding ScanIssues}">
+            <Border Grid.Column="2" Style="{StaticResource PanelStyle}" Padding="9">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+                    <Grid x:Name="PresetHeaderControls" Grid.Row="0" Margin="0,0,0,4">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Grid.Column="0" Text="Ambience" Style="{StaticResource SectionTitleStyle}"
+                                   Margin="0,0,8,0" VerticalAlignment="Center" />
+                        <ComboBox x:Name="AmbiencePresetComboBox" Grid.Column="1" Width="180" Height="28"
+                                  HorizontalAlignment="Right"
+                                  Style="{StaticResource PresetComboBoxStyle}"
+                                  ItemsSource="{Binding CurrentLibraryPresets}"
+                                  SelectedItem="{Binding SelectedAmbiencePreset, Mode=TwoWay}"
+                                  Text="{Binding AmbiencePresetName, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                  IsEditable="True" IsTextSearchEnabled="False"
+                                  ItemContainerStyle="{StaticResource PresetComboBoxItemStyle}"
+                                  Background="#202731" Foreground="#F6F8FA" BorderBrush="#465469"
+                                  Padding="6,2" ToolTip="Select an ambience preset to apply it, or type a name to save."
+                                  AutomationProperties.Name="Ambience preset"
+                                  AutomationProperties.HelpText="Select an existing preset to apply it, or type a new name for Save."
+                                  SelectionChanged="AmbiencePresetComboBox_SelectionChanged">
+                            <ComboBox.ItemTemplate>
+                                <DataTemplate>
+                                    <TextBlock Text="{Binding Name}" TextTrimming="CharacterEllipsis"
+                                               ToolTip="{Binding Name}" />
+                                </DataTemplate>
+                            </ComboBox.ItemTemplate>
+                        </ComboBox>
+                        <Button Grid.Column="2" Content="Apply" Style="{StaticResource ActionButtonStyle}"
+                                MinHeight="28" Padding="7,2" Margin="6,0,4,0"
+                                IsEnabled="{Binding CanApplyAmbiencePreset}" Click="ApplyAmbiencePreset_Click"
+                                ToolTip="Apply the selected ambience preset again."
+                                AutomationProperties.Name="Apply selected ambience preset" />
+                        <Button Grid.Column="3" Content="Save" Style="{StaticResource ActionButtonStyle}"
+                                MinHeight="28" Padding="7,2" Margin="0,0,4,0"
+                                IsEnabled="{Binding CanSaveAmbiencePreset}" Click="SaveAmbiencePreset_Click"
+                                ToolTip="Save the current ambience sources under this name; an existing name is updated."
+                                AutomationProperties.Name="Save current ambience preset"
+                                AutomationProperties.HelpText="Capture the current ambience sources under this name; an existing name is updated." />
+                        <Button Grid.Column="4" Content="Delete" Style="{StaticResource ActionButtonStyle}"
+                                MinHeight="28" Padding="7,2" Margin="0"
+                                IsEnabled="{Binding CanDeleteAmbiencePreset}" Click="DeleteAmbiencePreset_Click"
+                                ToolTip="Delete the selected ambience preset."
+                                AutomationProperties.Name="Delete selected ambience preset" />
+                    </Grid>
+                    <Grid Grid.Row="1" Margin="0,0,0,4">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="Search" Foreground="{StaticResource MutedBrush}" VerticalAlignment="Center" Margin="0,0,8,0" />
+                        <TextBox Grid.Column="1" Text="{Binding AmbienceSearchText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                 Height="26" Padding="7,2" Background="#11151B" Foreground="#F6F8FA"
+                                 BorderBrush="#465469" ToolTip="Filter ambience by name." AutomationProperties.Name="Search ambience" />
+                    </Grid>
+                        <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                        <ItemsControl ItemsSource="{Binding FilteredAmbienceTracks}" HorizontalContentAlignment="Center">
+                            <ItemsControl.ItemsPanel>
+                                <ItemsPanelTemplate>
+                                    <WrapPanel Orientation="Horizontal" HorizontalAlignment="Center" />
+                                </ItemsPanelTemplate>
+                            </ItemsControl.ItemsPanel>
+                            <ItemsControl.ItemContainerStyle>
+                                <Style TargetType="ContentPresenter">
+                                    <Setter Property="Margin" Value="3" />
+                                </Style>
+                            </ItemsControl.ItemContainerStyle>
                             <ItemsControl.ItemTemplate>
                                 <DataTemplate>
-                                    <Border Background="#382326" BorderBrush="#75424A" BorderThickness="1"
-                                            CornerRadius="4" Padding="9" Margin="0,0,0,7">
-                                        <StackPanel>
-                                            <TextBlock Text="{Binding Message}" TextWrapping="Wrap" Foreground="#FFD1D5" />
-                                            <TextBlock Text="{Binding Path}" TextWrapping="Wrap" Foreground="#BFA7AA"
-                                                       FontSize="11" Margin="0,3,0,0" />
-                                        </StackPanel>
+                                    <Border Width="148" Height="66" CornerRadius="6" Padding="0" ToolTip="{Binding FilePath}">
+                                        <Border.Style>
+                                            <Style TargetType="Border">
+                                                <Setter Property="Background" Value="#202731" />
+                                                <Setter Property="BorderBrush" Value="#465469" />
+                                                <Setter Property="BorderThickness" Value="2" />
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding CanStop}" Value="True">
+                                                        <Setter Property="BorderBrush" Value="#4FC3A1" />
+                                                        <Setter Property="BorderThickness" Value="3" />
+                                                    </DataTrigger>
+                                                    <Trigger Property="IsMouseOver" Value="True">
+                                                        <Setter Property="BorderBrush" Value="#91B0C9" />
+                                                    </Trigger>
+                                                    <MultiDataTrigger>
+                                                        <MultiDataTrigger.Conditions>
+                                                            <Condition Binding="{Binding CanStop}" Value="True" />
+                                                            <Condition Binding="{Binding RelativeSource={RelativeSource Self}, Path=IsMouseOver}" Value="True" />
+                                                        </MultiDataTrigger.Conditions>
+                                                        <Setter Property="BorderBrush" Value="#85E8C5" />
+                                                    </MultiDataTrigger>
+                                                    <Trigger Property="IsKeyboardFocusWithin" Value="True">
+                                                        <Setter Property="BorderBrush" Value="#A4BDD2" />
+                                                        <Setter Property="BorderThickness" Value="3" />
+                                                    </Trigger>
+                                                    <MultiDataTrigger>
+                                                        <MultiDataTrigger.Conditions>
+                                                            <Condition Binding="{Binding CanStop}" Value="True" />
+                                                            <Condition Binding="{Binding RelativeSource={RelativeSource Self}, Path=IsKeyboardFocusWithin}" Value="True" />
+                                                        </MultiDataTrigger.Conditions>
+                                                        <Setter Property="BorderBrush" Value="#85E8C5" />
+                                                        <Setter Property="BorderThickness" Value="3" />
+                                                    </MultiDataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </Border.Style>
+                                        <Grid>
+                                            <Border Background="#1E6B49" CornerRadius="5" Opacity="{Binding LifecycleGain}"
+                                                    IsHitTestVisible="False" />
+                                            <Button x:Name="TileAction" Style="{StaticResource AmbienceTileActionStyle}"
+                                                    IsEnabled="{Binding CanToggle}" Click="AmbienceToggle_Click"
+                                                    ToolTip="{Binding FilePath}"
+                                                    AutomationProperties.Name="{Binding Name, StringFormat=Toggle ambience: {0}}"
+                                                    Panel.ZIndex="1">
+                                                <TextBlock Text="{Binding Name}" FontSize="14" FontWeight="SemiBold"
+                                                           Foreground="#F6F8FA" TextTrimming="CharacterEllipsis" />
+                                            </Button>
+                                            <Slider Grid.Row="0" Minimum="0" Maximum="1" Height="16" VerticalAlignment="Bottom"
+                                                    Margin="8,0,8,7" IsMoveToPointEnabled="True" IsSnapToTickEnabled="False"
+                                                    Value="{Binding Gain, Mode=OneWay}"
+                                                    PreviewMouseLeftButtonUp="AmbienceGainSlider_MouseLeftButtonUp"
+                                                    PreviewKeyUp="AmbienceGainSlider_KeyUp"
+                                                    ToolTip="Individual ambience source volume."
+                                                    AutomationProperties.Name="{Binding Name, StringFormat=Gain for ambience: {0}}"
+                                                    AutomationProperties.HelpText="Adjust this source from 0 to 100 percent. The value is submitted when mouse or keyboard adjustment ends."
+                                                    Panel.ZIndex="2" />
+                                        </Grid>
                                     </Border>
                                 </DataTemplate>
                             </ItemsControl.ItemTemplate>
                         </ItemsControl>
-                    </StackPanel>
-                </ScrollViewer>
+                    </ScrollViewer>
+                </Grid>
             </Border>
         </Grid>
 
-        <Border Grid.Row="2" Style="{StaticResource PanelStyle}" Padding="12" Margin="0,12,0,0">
-             <Grid>
-                  <Grid.RowDefinitions>
-                      <RowDefinition Height="Auto" />
-                      <RowDefinition Height="Auto" />
-                      <RowDefinition Height="Auto" />
-                  </Grid.RowDefinitions>
-                 <Grid.ColumnDefinitions>
-                     <ColumnDefinition Width="Auto" />
-                     <ColumnDefinition Width="*" />
-                     <ColumnDefinition Width="Auto" />
-                 </Grid.ColumnDefinitions>
-                 <TextBlock Grid.Row="0" Grid.Column="0" Text="TRANSPORT" FontWeight="Bold" Foreground="{StaticResource AccentBrush}"
-                            VerticalAlignment="Center" Margin="2,0,18,0" />
-                  <StackPanel Grid.Row="0" Grid.Column="1" Orientation="Horizontal">
-                      <Button Content="{Binding PauseResumeLabel}" Style="{StaticResource ActionButtonStyle}"
-                              IsEnabled="{Binding CanPauseResume}" Click="PauseResume_Click"
-                              ToolTip="Pause or resume music transport only; ambience sources continue independently."
-                              AutomationProperties.Name="Music pause or resume"
-                              AutomationProperties.HelpText="Pause or resume the music transport. Ambience is controlled separately." />
-                     <Button Content="Skip" Style="{StaticResource ActionButtonStyle}"
-                             IsEnabled="{Binding CanSkip}" Click="Skip_Click" />
-                     <Button Content="Clear Queue" Style="{StaticResource ActionButtonStyle}"
-                             IsEnabled="{Binding CanClearQueue}" Click="ClearQueue_Click" />
-                       <Button Content="Stop All" Style="{StaticResource ActionButtonStyle}"
-                              IsEnabled="{Binding CanStopAll}" Click="StopAll_Click"
-                              ToolTip="Global stop: stop music and every ambience source."
-                              AutomationProperties.Name="Stop all music and ambience"
-                              AutomationProperties.HelpText="Stop all music and ambience sources globally." />
-                  </StackPanel>
-                  <StackPanel Grid.Row="0" Grid.Column="2" VerticalAlignment="Center">
-                      <TextBlock Text="{Binding PlaybackStateDisplay}" Foreground="#F6F8FA" FontWeight="SemiBold"
-                                 HorizontalAlignment="Right" />
-                      <TextBlock Text="{Binding ProgressDisplay}" Style="{StaticResource MutedTextStyle}"
-                                 HorizontalAlignment="Right" />
-                  </StackPanel>
+        <Grid Grid.Row="2" Margin="0,10,0,0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="16*" />
+                <ColumnDefinition Width="9*" />
+            </Grid.ColumnDefinitions>
+            <Grid Grid.Column="0" Margin="0,0,10,0">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="1.45*" />
+                    <ColumnDefinition Width="1*" />
+                </Grid.ColumnDefinitions>
+                <Border Grid.Column="0" Style="{StaticResource PanelStyle}" Padding="9" Margin="0,0,7,0">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Grid.Column="0" Text="NOW" FontSize="10" FontWeight="Bold" Foreground="{StaticResource AccentBrush}" Margin="0,0,7,0" />
+                        <TextBlock Grid.Column="1" Text="{Binding CurrentTrackDisplayName}" TextTrimming="CharacterEllipsis" ToolTip="{Binding CurrentTrackDisplayName}" />
+                        <TextBlock Grid.Column="2" Text="SOURCE" FontSize="10" FontWeight="Bold" Foreground="{StaticResource MutedBrush}" Margin="10,0,7,0" />
+                        <TextBlock Grid.Column="3" Text="{Binding CurrentPlaylistDisplay}" TextTrimming="CharacterEllipsis" ToolTip="{Binding CurrentPlaylistDisplay}" />
+                        <TextBlock Grid.Row="1" Grid.Column="0" Text="ACTIVE" FontSize="10" FontWeight="Bold" Foreground="{StaticResource MutedBrush}" Margin="0,5,7,0" />
+                        <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding ActivePlaylistDisplay}" TextTrimming="CharacterEllipsis" ToolTip="{Binding ActivePlaylistDisplay}" Margin="0,5,0,0" />
+                        <TextBlock Grid.Row="1" Grid.Column="2" Text="PENDING" FontSize="10" FontWeight="Bold" Foreground="{StaticResource MutedBrush}" Margin="10,5,7,0" />
+                        <TextBlock Grid.Row="1" Grid.Column="3" Text="{Binding PendingPlaylistDisplay}" TextTrimming="CharacterEllipsis" ToolTip="{Binding PendingPlaylistDisplay}" Margin="0,5,0,0" />
+                    </Grid>
+                </Border>
+                <Border Grid.Column="1" Style="{StaticResource PanelStyle}" Padding="9">
+                    <DockPanel>
+                        <TextBlock DockPanel.Dock="Top" Text="TRANSPORT" FontWeight="Bold" Foreground="{StaticResource AccentBrush}" Margin="0,0,0,4" />
+                        <StackPanel Orientation="Horizontal">
+                            <Button Content="{Binding PauseResumeLabel}" Style="{StaticResource ActionButtonStyle}" IsEnabled="{Binding CanPauseResume}"
+                                    Click="PauseResume_Click" ToolTip="Pause or resume music; ambience continues independently."
+                                    Height="28" MinHeight="0" Padding="7,3" VerticalAlignment="Center" />
+                            <Button Content="Skip" Style="{StaticResource ActionButtonStyle}" IsEnabled="{Binding CanSkip}" Click="Skip_Click"
+                                    Height="28" MinHeight="0" Padding="7,3" VerticalAlignment="Center" />
+                            <StackPanel VerticalAlignment="Center">
+                                <TextBlock Text="{Binding PlaybackStateDisplay}" Foreground="#F6F8FA" FontWeight="SemiBold" />
+                                <TextBlock Text="{Binding ProgressDisplay}" Style="{StaticResource MutedTextStyle}" FontSize="10" />
+                            </StackPanel>
+                        </StackPanel>
+                    </DockPanel>
+                </Border>
+            </Grid>
+            <Border Grid.Column="1" Style="{StaticResource PanelStyle}" Padding="10">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+                    <Grid Grid.Row="0" Margin="0,0,0,5">
+                        <TextBlock Text="QUEUE (FIFO)" FontWeight="Bold" Foreground="#F6F8FA" />
+                        <Button Content="Clear Queue" Style="{StaticResource ActionButtonStyle}" HorizontalAlignment="Right" MinHeight="26"
+                                Padding="8,2" Margin="0" IsEnabled="{Binding CanClearQueue}" Click="ClearQueue_Click" />
+                    </Grid>
+                    <Grid Grid.Row="1">
+                        <TextBlock Text="Queue is empty" VerticalAlignment="Top">
+                            <TextBlock.Style>
+                                <Style TargetType="TextBlock" BasedOn="{StaticResource MutedTextStyle}">
+                                    <Setter Property="Visibility" Value="Collapsed" />
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding HasExplicitQueue}" Value="False">
+                                            <Setter Property="Visibility" Value="Visible" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </TextBlock.Style>
+                        </TextBlock>
+                        <ScrollViewer MaxHeight="60" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled">
+                            <ScrollViewer.Resources>
+                                <Style TargetType="ScrollBar" BasedOn="{StaticResource QueueScrollBarStyle}" />
+                            </ScrollViewer.Resources>
+                            <ItemsControl ItemsSource="{Binding ExplicitQueue}">
+                                <ItemsControl.ItemsPanel>
+                                    <ItemsPanelTemplate>
+                                        <WrapPanel Orientation="Horizontal" />
+                                    </ItemsPanelTemplate>
+                                </ItemsControl.ItemsPanel>
+                                <ItemsControl.ItemContainerStyle>
+                                    <Style TargetType="ContentPresenter">
+                                        <Setter Property="Margin" Value="0,0,5,0" />
+                                    </Style>
+                                </ItemsControl.ItemContainerStyle>
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Border Width="145" Height="48" Background="#222A35" BorderBrush="#303A48" BorderThickness="1"
+                                                CornerRadius="4" Padding="7,4">
+                                            <StackPanel>
+                                                <TextBlock Text="{Binding Track.Name}" FontSize="11" FontWeight="SemiBold"
+                                                           TextTrimming="CharacterEllipsis" ToolTip="{Binding Track.FilePath}" />
+                                                <TextBlock Text="{Binding SourcePlaylist.QualifiedDisplayName}" FontSize="10"
+                                                           Foreground="{StaticResource MutedBrush}" TextTrimming="CharacterEllipsis"
+                                                           ToolTip="{Binding SourcePlaylist.QualifiedDisplayName}" Margin="0,3,0,0" />
+                                            </StackPanel>
+                                        </Border>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </ScrollViewer>
+                    </Grid>
+                </Grid>
+            </Border>
+        </Grid>
 
-                  <Border Grid.Row="1" Grid.ColumnSpan="3" BorderBrush="#303A48" BorderThickness="0,1,0,0"
-                          Padding="0,10,0,0" Margin="0,10,0,0">
-                     <WrapPanel>
-                         <StackPanel Width="205" VerticalAlignment="Center" Margin="2,0,10,0">
-                             <TextBlock Text="MASTER FADES" FontWeight="Bold" Foreground="#9BD0FF" />
-                             <TextBlock Text="Fixed 2s / 10s output fades; not track transitions."
-                                        Style="{StaticResource MutedTextStyle}" FontSize="11" />
-                         </StackPanel>
-                         <Button Content="Quick Fade In (2s)" Style="{StaticResource MasterFadeButtonStyle}"
-                                 IsEnabled="{Binding CanQuickFadeIn}" Click="QuickFadeIn_Click"
-                                 AutomationProperties.Name="Quick master fade in, 2 seconds"
-                                 AutomationProperties.HelpText="Fade the master output in over the fixed 2-second duration." />
-                         <Button Content="Quick Fade Out (2s)" Style="{StaticResource MasterFadeButtonStyle}"
-                                 IsEnabled="{Binding CanQuickFadeOut}" Click="QuickFadeOut_Click"
-                                 AutomationProperties.Name="Quick master fade out, 2 seconds"
-                                 AutomationProperties.HelpText="Fade the master output out over the fixed 2-second duration." />
-                         <Button Content="Slow Fade In (10s)" Style="{StaticResource MasterFadeButtonStyle}"
-                                 IsEnabled="{Binding CanSlowFadeIn}" Click="SlowFadeIn_Click"
-                                 AutomationProperties.Name="Slow master fade in, 10 seconds"
-                                 AutomationProperties.HelpText="Fade the master output in over the fixed 10-second duration." />
-                         <Button Content="Slow Fade Out (10s)" Style="{StaticResource MasterFadeButtonStyle}"
-                                 IsEnabled="{Binding CanSlowFadeOut}" Click="SlowFadeOut_Click"
-                                 AutomationProperties.Name="Slow master fade out, 10 seconds"
-                                 AutomationProperties.HelpText="Fade the master output out over the fixed 10-second duration." />
-                     </WrapPanel>
-                  </Border>
+        <Border Grid.Row="3" Style="{StaticResource PanelStyle}" Padding="8" Margin="0,10,0,0">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="1.15*" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <StackPanel Grid.Column="0" Margin="2,0,10,0">
+                    <TextBlock Text="MUSIC" FontWeight="Bold" Foreground="#F6F8FA" />
+                    <DockPanel Margin="0,2,0,0">
+                        <TextBlock DockPanel.Dock="Right" Text="{Binding MusicVolumeDisplay, StringFormat=Volume {0}}" FontSize="11" FontWeight="SemiBold" Margin="7,0,0,0" />
+                        <Slider Minimum="0" Maximum="1" Height="19" IsMoveToPointEnabled="True" IsSnapToTickEnabled="False"
+                                Value="{Binding MusicVolume, Mode=OneWay}" PreviewMouseLeftButtonUp="MusicVolumeSlider_MouseLeftButtonUp"
+                                PreviewKeyUp="MusicVolumeSlider_KeyUp" ToolTip="Music bus volume fades smoothly to the requested target using configured Medium timing."
+                                AutomationProperties.Name="Music volume" />
+                    </DockPanel>
+                    <WrapPanel Margin="0,3,0,0">
+                        <Button Content="{Binding MusicFadeLabel}" Style="{StaticResource ActionButtonStyle}" MinHeight="27" Padding="8,2"
+                                IsEnabled="{Binding CanToggleMusicFade}" Click="MusicFadeToggle_Click" ToolTip="Fade the music bus in or out." />
+                        <TextBlock Text="{Binding MusicFadeGainDisplay, StringFormat=Fade gain {0}}" FontSize="11" VerticalAlignment="Center" Margin="0,0,7,0" />
+                        <TextBlock Text="{Binding MusicFadeStateDisplay}" Style="{StaticResource MutedTextStyle}" FontSize="11" VerticalAlignment="Center" />
+                    </WrapPanel>
+                </StackPanel>
 
-                  <Border Grid.Row="2" Grid.ColumnSpan="3" BorderBrush="#303A48" BorderThickness="0,1,0,0"
-                          Padding="0,10,0,0" Margin="0,10,0,0">
-                      <Grid>
-                          <Grid.ColumnDefinitions>
-                              <ColumnDefinition Width="*" />
-                              <ColumnDefinition Width="*" />
-                              <ColumnDefinition Width="*" />
-                          </Grid.ColumnDefinitions>
-                          <StackPanel Grid.Column="0" Margin="2,0,14,0">
-                              <TextBlock Text="MUSIC VOLUME" FontWeight="Bold" Foreground="#F6F8FA" />
-                              <DockPanel Margin="0,3,0,0">
-                                  <TextBlock DockPanel.Dock="Right" Text="{Binding MusicVolumeDisplay}"
-                                             Foreground="#F6F8FA" FontWeight="SemiBold" Margin="8,0,0,0" />
-                                  <Slider Minimum="0" Maximum="1" TickFrequency="0.1" IsSnapToTickEnabled="False"
-                                          Value="{Binding MusicVolume, Mode=OneWay}"
-                                          PreviewMouseLeftButtonUp="MusicVolumeSlider_MouseLeftButtonUp"
-                                          PreviewKeyUp="MusicVolumeSlider_KeyUp"
-                                          ToolTip="Configured music bus volume, 0 to 100 percent."
-                                          AutomationProperties.Name="Music volume"
-                                          AutomationProperties.HelpText="Adjust the persistent music bus volume from 0 to 100 percent. The value is submitted when mouse or keyboard adjustment ends." />
-                              </DockPanel>
-                          </StackPanel>
-                          <StackPanel Grid.Column="1" Margin="0,0,14,0">
-                              <TextBlock Text="AMBIENCE VOLUME" FontWeight="Bold" Foreground="#F6F8FA" />
-                              <DockPanel Margin="0,3,0,0">
-                                  <TextBlock DockPanel.Dock="Right" Text="{Binding AmbienceVolumeDisplay}"
-                                             Foreground="#F6F8FA" FontWeight="SemiBold" Margin="8,0,0,0" />
-                                  <Slider Minimum="0" Maximum="1" TickFrequency="0.1" IsSnapToTickEnabled="False"
-                                          Value="{Binding AmbienceVolume, Mode=OneWay}"
-                                          PreviewMouseLeftButtonUp="AmbienceVolumeSlider_MouseLeftButtonUp"
-                                          PreviewKeyUp="AmbienceVolumeSlider_KeyUp"
-                                          ToolTip="Configured ambience bus volume, 0 to 100 percent."
-                                          AutomationProperties.Name="Ambience volume"
-                                          AutomationProperties.HelpText="Adjust the persistent ambience bus volume from 0 to 100 percent. The value is submitted when mouse or keyboard adjustment ends." />
-                              </DockPanel>
-                          </StackPanel>
-                          <StackPanel Grid.Column="2">
-                              <TextBlock Text="MASTER VOLUME" FontWeight="Bold" Foreground="#F6F8FA" />
-                              <DockPanel Margin="0,3,0,0">
-                                  <TextBlock DockPanel.Dock="Right" Text="{Binding MasterVolumeDisplay}"
-                                             Foreground="#F6F8FA" FontWeight="SemiBold" Margin="8,0,0,0" />
-                                  <Slider Minimum="0" Maximum="1" TickFrequency="0.1" IsSnapToTickEnabled="False"
-                                          Value="{Binding MasterVolume, Mode=OneWay}"
-                                          PreviewMouseLeftButtonUp="MasterVolumeSlider_MouseLeftButtonUp"
-                                          PreviewKeyUp="MasterVolumeSlider_KeyUp"
-                                          ToolTip="Configured master volume, 0 to 100 percent. This is separate from the master output fade."
-                                          AutomationProperties.Name="Master volume"
-                                          AutomationProperties.HelpText="Adjust the persistent master volume from 0 to 100 percent. This is separate from the master output fade gain." />
-                              </DockPanel>
-                          </StackPanel>
-                      </Grid>
-                  </Border>
-               </Grid>
-         </Border>
+                <Border Grid.Column="1" Style="{StaticResource MasterPanelStyle}" Padding="7" Margin="0,0,10,0"
+                        ToolTip="MASTER OUTPUT is the final pipeline stage and can silence both music and ambience.">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+                        <DockPanel Grid.Row="0">
+                            <TextBlock DockPanel.Dock="Right" Text="Final output for all sound" Style="{StaticResource MutedTextStyle}" FontSize="10" VerticalAlignment="Center" />
+                            <TextBlock Text="MASTER OUTPUT" FontWeight="Bold" Foreground="#9BD0FF" />
+                        </DockPanel>
+                        <DockPanel Grid.Row="1" Margin="0,2,0,0">
+                            <TextBlock DockPanel.Dock="Right" Text="{Binding MasterVolumeDisplay, StringFormat=Volume {0}}" FontSize="11" FontWeight="SemiBold" Margin="7,0,0,0" />
+                            <Slider Minimum="0" Maximum="1" Height="19" IsMoveToPointEnabled="True" IsSnapToTickEnabled="False"
+                                    Value="{Binding MasterVolume, Mode=OneWay}" PreviewMouseLeftButtonUp="MasterVolumeSlider_MouseLeftButtonUp"
+                                    PreviewKeyUp="MasterVolumeSlider_KeyUp" ToolTip="Final output volume fades smoothly to the requested target using configured Medium timing. This can silence music and ambience."
+                                    AutomationProperties.Name="Master output volume"
+                                    AutomationProperties.HelpText="Adjust the final pipeline stage for all sound." />
+                        </DockPanel>
+                        <Grid Grid.Row="2" Margin="0,3,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <Button Grid.Column="0" Content="{Binding MasterFadeLabel}" Style="{StaticResource MasterFadeButtonStyle}" MinHeight="26" Padding="5,1" Margin="0,0,4,0"
+                                    IsEnabled="{Binding CanToggleMasterFade}" Click="MasterFadeToggle_Click" ToolTip="Fade the final output in or out." />
+                            <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                                <TextBlock Text="{Binding MasterFadeGainDisplay, StringFormat=Fade gain {0}}" FontSize="10" Margin="0,0,5,0" />
+                                <TextBlock Text="{Binding MasterFadeStateDisplay}" Style="{StaticResource MutedTextStyle}" FontSize="10" />
+                            </StackPanel>
+                            <Button Grid.Column="2" Content="{Binding FadeSpeedLabel, StringFormat=Fade speed: {0}}" Style="{StaticResource ActionButtonStyle}" MinHeight="26"
+                                    FontSize="10" Padding="5,1" Margin="4,0,4,0" Click="FadeSpeedToggle_Click"
+                                    ToolTip="Select the duration for new and reversed fades; this is not only a volume-slider setting." />
+                            <Button Grid.Column="3" Content="Stop All" Style="{StaticResource StopAllButtonStyle}" MinHeight="26" FontSize="10" Padding="5,1" Margin="0"
+                                    IsEnabled="{Binding CanStopAll}" Click="StopAll_Click"
+                                    ToolTip="Fade and stop all music and ambience."
+                                    AutomationProperties.Name="Stop all music and ambience"
+                                    AutomationProperties.HelpText="Fade the final output to silence, then stop all music and ambience sources." />
+                        </Grid>
+                    </Grid>
+                </Border>
+
+                <StackPanel Grid.Column="2">
+                    <TextBlock Text="AMBIENCE" FontWeight="Bold" Foreground="#F6F8FA" />
+                    <DockPanel Margin="0,2,0,0">
+                        <TextBlock DockPanel.Dock="Right" Text="{Binding AmbienceVolumeDisplay, StringFormat=Volume {0}}" FontSize="11" FontWeight="SemiBold" Margin="7,0,0,0" />
+                        <Slider Minimum="0" Maximum="1" Height="19" IsMoveToPointEnabled="True" IsSnapToTickEnabled="False"
+                                Value="{Binding AmbienceVolume, Mode=OneWay}" PreviewMouseLeftButtonUp="AmbienceVolumeSlider_MouseLeftButtonUp"
+                                PreviewKeyUp="AmbienceVolumeSlider_KeyUp" ToolTip="Ambience bus volume fades smoothly to the requested target using configured Medium timing."
+                                AutomationProperties.Name="Ambience volume" />
+                    </DockPanel>
+                    <WrapPanel Margin="0,3,0,0">
+                        <Button Content="{Binding AmbienceFadeLabel}" Style="{StaticResource ActionButtonStyle}" MinHeight="27" Padding="8,2"
+                                IsEnabled="{Binding CanToggleAmbienceFade}" Click="AmbienceFadeToggle_Click" ToolTip="Fade the ambience bus in or out." />
+                        <TextBlock Text="{Binding AmbienceFadeGainDisplay, StringFormat=Fade gain {0}}" FontSize="11" VerticalAlignment="Center" Margin="0,0,7,0" />
+                        <TextBlock Text="{Binding AmbienceFadeStateDisplay}" Style="{StaticResource MutedTextStyle}" FontSize="11" VerticalAlignment="Center" />
+                    </WrapPanel>
+                </StackPanel>
+            </Grid>
+        </Border>
     </Grid>
 </Window>

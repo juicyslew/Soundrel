@@ -705,6 +705,7 @@ public sealed class AudioEngineTests
 
         try
         {
+            await engine.ConfigureTimingAsync(TimeSpan.FromSeconds(2), TimeSpan.Zero);
             await engine.PlayAsync(Track(firstPath), 111);
             output.PumpFrames(100);
             await engine.PlayAsync(Track(secondPath), 112, ImmediateTransitionMode.Crossfade);
@@ -740,6 +741,125 @@ public sealed class AudioEngineTests
             await engine.DisposeAsync();
             File.Delete(firstPath);
             File.Delete(secondPath);
+        }
+    }
+
+    [TestMethod]
+    public async Task Crossfade_UsesConfiguredMediumAndStaggerWithoutAdvancingIncomingSource()
+    {
+        var firstPath = CreateConstantWaveFile(5);
+        var secondPath = CreateConstantWaveFile(5);
+        var output = new FakeWavePlayer();
+        AudioTrackSource? incomingSource = null;
+        await using var engine = new AudioEngine(
+            () => output,
+            (path, playbackId, ended) =>
+            {
+                var source = AudioTrackSource.Open(path, playbackId, ended);
+                if (playbackId == 114)
+                {
+                    incomingSource = source;
+                }
+
+                return source;
+            });
+
+        try
+        {
+            await engine.ConfigureTimingAsync(TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(1));
+            await engine.PlayAsync(Track(firstPath), 113);
+            await engine.PlayAsync(
+                Track(secondPath),
+                114,
+                ImmediateTransitionMode.Crossfade);
+            Assert.IsNotNull(incomingSource);
+
+            var throughStagger = output.ReadFrames(48_000);
+            Assert.IsTrue(throughStagger.Any(sample => Math.Abs(sample) > 0f));
+            Assert.AreEqual(TimeSpan.Zero, (await engine.GetProgressAsync()).Position);
+            Assert.AreEqual(0, incomingSource!.SamplesRead);
+
+            var firstIncomingFrame = output.ReadFrames(1);
+            Assert.IsTrue(firstIncomingFrame.Any(sample => Math.Abs(sample) > 0f));
+            Assert.IsTrue((await engine.GetProgressAsync()).Position > TimeSpan.Zero);
+            Assert.IsGreaterThan(0, incomingSource!.SamplesRead);
+
+            var afterIncomingStart = output.ReadFrames(24_000);
+            Assert.IsTrue(afterIncomingStart.Any(sample => Math.Abs(sample) > 0f));
+            Assert.IsGreaterThan(0f, engine.CurrentMusicGain);
+
+            output.PumpFrames(48_000);
+            await WaitUntilAsync(() => engine.OutgoingPlaybackId is null);
+        }
+        finally
+        {
+            await engine.DisposeAsync();
+            File.Delete(firstPath);
+            File.Delete(secondPath);
+        }
+    }
+
+    [TestMethod]
+    public async Task ConfigureTiming_RejectsStaggerLongerThanMediumAndAcceptsEquality()
+    {
+        await using var engine = new AudioEngine(() => new FakeWavePlayer());
+
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
+            engine.ConfigureTimingAsync(TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(2.01)));
+
+        await engine.ConfigureTimingAsync(TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(2));
+    }
+
+    [TestMethod]
+    public async Task SupersededDelayedCrossfade_RetiresStaleSourceAndPreservesLatestIdentity()
+    {
+        var firstPath = CreateConstantWaveFile(5, 0.2f);
+        var delayedPath = CreateConstantWaveFile(5, 0.4f);
+        var replacementPath = CreateConstantWaveFile(5, 0.6f);
+        var output = new FakeWavePlayer();
+        AudioTrackSource? delayedSource = null;
+        await using var engine = new AudioEngine(
+            () => output,
+            (path, playbackId, ended) =>
+            {
+                var source = AudioTrackSource.Open(path, playbackId, ended);
+                if (playbackId == 115)
+                {
+                    delayedSource = source;
+                }
+
+                return source;
+            });
+
+        try
+        {
+            await engine.ConfigureTimingAsync(
+                TimeSpan.FromSeconds(4),
+                TimeSpan.FromSeconds(1));
+            await engine.PlayAsync(Track(firstPath), 114);
+            await engine.PlayAsync(Track(delayedPath), 115, ImmediateTransitionMode.Crossfade);
+            Assert.AreEqual(0, delayedSource!.SamplesRead);
+
+            await engine.PlayAsync(Track(replacementPath), 116, ImmediateTransitionMode.Crossfade);
+            output.PumpFrames(48_000);
+
+            Assert.AreEqual(116L, engine.CurrentPlaybackId);
+            Assert.AreEqual(114L, engine.OutgoingPlaybackId);
+            Assert.AreEqual(2, engine.MusicInputCount);
+            Assert.AreEqual(0, delayedSource.SamplesRead);
+            AssertFileReleased(delayedPath);
+
+            output.PumpFrames(48_000);
+            Assert.AreEqual(0, delayedSource.SamplesRead);
+            Assert.AreEqual(116L, engine.CurrentPlaybackId);
+            Assert.AreEqual(114L, engine.OutgoingPlaybackId);
+        }
+        finally
+        {
+            await engine.DisposeAsync();
+            File.Delete(firstPath);
+            File.Delete(delayedPath);
+            File.Delete(replacementPath);
         }
     }
 
@@ -794,6 +914,7 @@ public sealed class AudioEngineTests
 
         try
         {
+            await engine.ConfigureTimingAsync(TimeSpan.FromSeconds(2), TimeSpan.Zero);
             await engine.PlayAsync(Track(firstPath), 131);
             await engine.PlayAsync(Track(secondPath), 132, ImmediateTransitionMode.Crossfade);
             output.PumpFrames(4_800);
@@ -833,6 +954,7 @@ public sealed class AudioEngineTests
 
         try
         {
+            await engine.ConfigureTimingAsync(TimeSpan.FromSeconds(2), TimeSpan.Zero);
             await engine.PlayAsync(Track(firstPath), 141);
             await engine.PlayAsync(Track(secondPath), 142, ImmediateTransitionMode.Crossfade);
             await engine.PlayAsync(Track(thirdPath), 143, ImmediateTransitionMode.Crossfade);
@@ -880,6 +1002,7 @@ public sealed class AudioEngineTests
         var engine = new AudioEngine(() => output);
         try
         {
+            await engine.ConfigureTimingAsync(TimeSpan.FromSeconds(2), TimeSpan.Zero);
             await engine.PlayAsync(Track(firstPath), 141);
             await engine.PlayAsync(Track(secondPath), 142, ImmediateTransitionMode.Crossfade);
             output.PumpFrames(framesBeforeInterruption);
@@ -916,6 +1039,45 @@ public sealed class AudioEngineTests
     }
 
     [TestMethod]
+    public async Task InterruptedCrossfade_ScalesRetainedOutgoingFadeFromCurrentGain()
+    {
+        var firstPath = CreateConstantWaveFile(8, 0.2f);
+        var secondPath = CreateConstantWaveFile(8, 0.4f);
+        var thirdPath = CreateConstantWaveFile(8, 0.6f);
+        var output = new FakeWavePlayer();
+        await using var engine = new AudioEngine(() => output);
+
+        try
+        {
+            await engine.ConfigureTimingAsync(TimeSpan.FromSeconds(4), TimeSpan.Zero);
+            await engine.PlayAsync(Track(firstPath), 144);
+            await engine.PlayAsync(Track(secondPath), 145, ImmediateTransitionMode.Crossfade);
+            output.PumpFrames(144_000);
+
+            Assert.AreEqual(145L, engine.CurrentPlaybackId);
+            Assert.IsGreaterThan(0.9f, engine.CurrentMusicGain);
+            Assert.IsLessThan(0.94f, engine.CurrentMusicGain);
+
+            await engine.PlayAsync(Track(thirdPath), 146, ImmediateTransitionMode.Crossfade);
+            Assert.AreEqual(145L, engine.OutgoingPlaybackId);
+
+            output.PumpFrames(182_400);
+            await WaitUntilAsync(() => engine.OutgoingPlaybackId is null);
+
+            Assert.AreEqual(146L, engine.CurrentPlaybackId);
+            Assert.AreEqual(1, engine.MusicInputCount);
+            AssertFileReleased(secondPath);
+        }
+        finally
+        {
+            await engine.DisposeAsync();
+            File.Delete(firstPath);
+            File.Delete(secondPath);
+            File.Delete(thirdPath);
+        }
+    }
+
+    [TestMethod]
     public async Task Pause_FreezesCrossfadeAndMasterFadeUntilResume()
     {
         var firstPath = CreateConstantWaveFile(4);
@@ -924,6 +1086,7 @@ public sealed class AudioEngineTests
         var engine = new AudioEngine(() => output);
         try
         {
+            await engine.ConfigureTimingAsync(TimeSpan.FromSeconds(2), TimeSpan.Zero);
             await engine.PlayAsync(Track(firstPath), 151);
             await engine.PlayAsync(Track(secondPath), 152, ImmediateTransitionMode.Crossfade);
             await engine.FadeMasterAsync(MasterFadeDirection.Out, TimeSpan.FromSeconds(2));
@@ -1166,6 +1329,262 @@ public sealed class AudioEngineTests
     }
 
     [TestMethod]
+    public async Task BusFades_AreIndependentFromPersistentVolumesAndMasterFade()
+    {
+        var musicPath = CreateConstantWaveFile(5, 0.2f);
+        var ambiencePath = CreateConstantWaveFile(5, 0.1f);
+        var output = new FakeWavePlayer();
+        await using var engine = new AudioEngine(() => output);
+
+        try
+        {
+            await engine.SetMusicVolumeAsync(0.5f);
+            await engine.SetAmbienceVolumeAsync(0.5f);
+            await engine.SetMasterVolumeAsync(0.5f);
+            await engine.PlayAsync(Track(musicPath), 195);
+            await engine.PlayAmbienceAsync(Track(ambiencePath), 0.5f);
+            output.PumpFrames(96_000);
+
+            var full = await engine.GetProgressAsync();
+            Assert.AreEqual(1f, full.MusicFadeGain, 0.00002f);
+            Assert.AreEqual(1f, full.AmbienceFadeGain, 0.00002f);
+            Assert.AreEqual(0.5f, full.MusicVolume, 0.00002f);
+            Assert.AreEqual(0.5f, full.AmbienceVolume, 0.00002f);
+            Assert.AreEqual(0.5f, full.MasterVolume, 0.00002f);
+
+            await engine.FadeMusicAsync(MasterFadeDirection.Out, TimeSpan.FromSeconds(2));
+            output.PumpFrames(48_000);
+            var halfway = await engine.GetProgressAsync();
+            Assert.AreEqual(0.5f, halfway.MusicFadeGain, 0.00002f);
+            Assert.AreEqual(MasterFadeState.FadingOut, halfway.MusicFadeState);
+            Assert.AreEqual(1f, halfway.AmbienceFadeGain, 0.00002f);
+            Assert.AreEqual(0.5f, halfway.MasterVolume, 0.00002f);
+
+            await engine.SetMusicVolumeAsync(1f);
+            Assert.AreEqual(1f, (await engine.GetProgressAsync()).MusicVolume, 0.00002f);
+            Assert.AreEqual(0.5f, (await engine.GetProgressAsync()).MusicFadeGain, 0.00002f);
+
+            await engine.FadeAmbienceAsync(MasterFadeDirection.Out, TimeSpan.Zero);
+            var mutedAmbience = await engine.GetProgressAsync();
+            Assert.AreEqual(0f, mutedAmbience.AmbienceFadeGain);
+            Assert.AreEqual(MasterFadeState.Muted, mutedAmbience.AmbienceFadeState);
+            Assert.AreEqual(0.5f, mutedAmbience.MusicFadeGain, 0.00002f);
+        }
+        finally
+        {
+            await engine.DisposeAsync();
+            File.Delete(musicPath);
+            File.Delete(ambiencePath);
+        }
+    }
+
+    [TestMethod]
+    public async Task PersistentVolumes_ActiveStagesRampAtMediumRateAndRetargetFromRenderedGain()
+    {
+        var musicPath = CreateConstantWaveFile(12, 0.2f);
+        var ambiencePath = CreateConstantWaveFile(12, 0.1f);
+        var output = new FakeWavePlayer();
+        await using var engine = new AudioEngine(() => output);
+
+        try
+        {
+            await engine.ConfigureTimingAsync(TimeSpan.FromSeconds(4), TimeSpan.Zero);
+            await engine.PlayAsync(Track(musicPath), 198);
+            await engine.PlayAmbienceAsync(Track(ambiencePath), 1f);
+            output.PumpFrames(192_000);
+
+            await engine.SetMusicVolumeAsync(0.25f);
+            await engine.SetAmbienceVolumeAsync(0.5f);
+            await engine.SetMasterVolumeAsync(0.75f);
+
+            var requested = await engine.GetProgressAsync();
+            Assert.AreEqual(0.25f, requested.MusicVolume, 0.00002f);
+            Assert.AreEqual(0.5f, requested.AmbienceVolume, 0.00002f);
+            Assert.AreEqual(0.75f, requested.MasterVolume, 0.00002f);
+            Assert.AreEqual(1f, engine.CurrentMusicVolumeGain, 0.00002f);
+            Assert.AreEqual(1f, engine.CurrentAmbienceVolumeGain, 0.00002f);
+            Assert.AreEqual(1f, engine.CurrentMasterVolumeGain, 0.00002f);
+
+            output.PumpFrames(96_000);
+            Assert.AreEqual(0.5f, engine.CurrentMusicVolumeGain, 0.00002f);
+            Assert.AreEqual(0.5f, engine.CurrentAmbienceVolumeGain, 0.00002f);
+            Assert.AreEqual(0.75f, engine.CurrentMasterVolumeGain, 0.00002f);
+            requested = await engine.GetProgressAsync();
+            Assert.AreEqual(0.25f, requested.MusicVolume, 0.00002f);
+            Assert.AreEqual(0.5f, requested.AmbienceVolume, 0.00002f);
+            Assert.AreEqual(0.75f, requested.MasterVolume, 0.00002f);
+
+            await engine.SetMusicVolumeAsync(1f);
+            await engine.SetAmbienceVolumeAsync(0.25f);
+            await engine.SetMasterVolumeAsync(0f);
+            Assert.AreEqual(0.5f, engine.CurrentMusicVolumeGain, 0.00002f);
+            Assert.AreEqual(0.5f, engine.CurrentAmbienceVolumeGain, 0.00002f);
+            Assert.AreEqual(0.75f, engine.CurrentMasterVolumeGain, 0.00002f);
+
+            output.ReadFrames(1);
+            Assert.AreEqual(0.5f, engine.CurrentMusicVolumeGain, 0.00002f);
+            Assert.AreEqual(0.5f, engine.CurrentAmbienceVolumeGain, 0.00002f);
+            Assert.AreEqual(0.75f, engine.CurrentMasterVolumeGain, 0.00002f);
+
+            // The replacement targets use 2, 1, and 3 seconds from the
+            // rendered gain, rather than restarting their old ramps.
+            output.PumpFrames(48_000);
+            Assert.AreEqual(0.75f, engine.CurrentMusicVolumeGain, 0.00002f);
+            Assert.AreEqual(0.25f, engine.CurrentAmbienceVolumeGain, 0.00002f);
+            Assert.AreEqual(0.5f, engine.CurrentMasterVolumeGain, 0.00002f);
+
+            output.PumpFrames(48_000);
+            Assert.AreEqual(1f, engine.CurrentMusicVolumeGain, 0.00002f);
+            Assert.AreEqual(0.25f, engine.CurrentAmbienceVolumeGain, 0.00002f);
+            Assert.AreEqual(0.25f, engine.CurrentMasterVolumeGain, 0.00002f);
+            output.PumpFrames(48_000);
+            Assert.AreEqual(0f, engine.CurrentMasterVolumeGain, 0.00002f);
+
+            requested = await engine.GetProgressAsync();
+            Assert.AreEqual(1f, requested.MusicVolume, 0.00002f);
+            Assert.AreEqual(0.25f, requested.AmbienceVolume, 0.00002f);
+            Assert.AreEqual(0f, requested.MasterVolume, 0.00002f);
+        }
+        finally
+        {
+            await engine.DisposeAsync();
+            File.Delete(musicPath);
+            File.Delete(ambiencePath);
+        }
+    }
+
+    [TestMethod]
+    public async Task PersistentVolumes_InactiveStagesApplyImmediatelyBeforePlayback()
+    {
+        var path = CreateConstantWaveFile(3, 0.25f);
+        var output = new FakeWavePlayer();
+        await using var engine = new AudioEngine(() => output);
+
+        try
+        {
+            await engine.ConfigureTimingAsync(TimeSpan.FromSeconds(4), TimeSpan.Zero);
+            await engine.SetMusicVolumeAsync(0.2f);
+            await engine.SetAmbienceVolumeAsync(0.5f);
+            await engine.SetMasterVolumeAsync(0.4f);
+
+            Assert.AreEqual(0.2f, engine.CurrentMusicVolumeGain, 0.00002f);
+            Assert.AreEqual(0.5f, engine.CurrentAmbienceVolumeGain, 0.00002f);
+            Assert.AreEqual(0.4f, engine.CurrentMasterVolumeGain, 0.00002f);
+            var progress = await engine.GetProgressAsync();
+            Assert.AreEqual(0.2f, progress.MusicVolume, 0.00002f);
+            Assert.AreEqual(0.5f, progress.AmbienceVolume, 0.00002f);
+            Assert.AreEqual(0.4f, progress.MasterVolume, 0.00002f);
+            Assert.AreEqual(0, output.InitCount);
+
+            await engine.PlayAsync(Track(path), 199);
+            Assert.AreEqual(0.02f, output.ReadFrames(1)[0], 0.00002f);
+        }
+        finally
+        {
+            await engine.DisposeAsync();
+            File.Delete(path);
+        }
+    }
+
+    [TestMethod]
+    public async Task PersistentVolumes_PausedMusicOnlyAppliesImmediatelyForResume()
+    {
+        var path = CreateConstantWaveFile(3, 0.25f);
+        var output = new FakeWavePlayer();
+        await using var engine = new AudioEngine(() => output);
+
+        try
+        {
+            await engine.ConfigureTimingAsync(TimeSpan.FromSeconds(4), TimeSpan.Zero);
+            await engine.PlayAsync(Track(path), 200);
+            await engine.PauseAsync();
+            await engine.SetMusicVolumeAsync(0.2f);
+            await engine.SetMasterVolumeAsync(0.4f);
+
+            Assert.AreEqual(0.2f, engine.CurrentMusicVolumeGain, 0.00002f);
+            Assert.AreEqual(0.4f, engine.CurrentMasterVolumeGain, 0.00002f);
+            var progress = await engine.GetProgressAsync();
+            Assert.AreEqual(0.2f, progress.MusicVolume, 0.00002f);
+            Assert.AreEqual(0.4f, progress.MasterVolume, 0.00002f);
+
+            await engine.ResumeAsync();
+            Assert.AreEqual(0.02f, output.ReadFrames(1)[0], 0.00002f);
+        }
+        finally
+        {
+            await engine.DisposeAsync();
+            File.Delete(path);
+        }
+    }
+
+    [TestMethod]
+    public async Task CompletionAwareMasterFade_CompletesAtSampleTargetAndIsCanceledWhenSuperseded()
+    {
+        var path = CreateConstantWaveFile(5);
+        var output = new FakeWavePlayer();
+        await using var engine = new AudioEngine(() => output);
+
+        try
+        {
+            await engine.PlayAsync(Track(path), 196);
+            var first = engine.FadeMasterAndWaitAsync(
+                MasterFadeDirection.Out,
+                TimeSpan.FromSeconds(2));
+            output.PumpFrames(48_000);
+            Assert.IsFalse(first.IsCompleted);
+
+            await engine.FadeMasterAsync(MasterFadeDirection.In, TimeSpan.FromSeconds(1));
+            await Assert.ThrowsAsync<TaskCanceledException>(async () => await first);
+
+            var second = engine.FadeMasterAndWaitAsync(
+                MasterFadeDirection.Out,
+                TimeSpan.FromSeconds(2));
+            output.PumpFrames(47_999);
+            Assert.IsFalse(second.IsCompleted);
+            output.PumpFrames(1);
+            await second.WaitAsync(TestTimeout);
+            Assert.AreEqual(0f, (await engine.GetProgressAsync()).MasterFadeGain);
+        }
+        finally
+        {
+            await engine.DisposeAsync();
+            File.Delete(path);
+        }
+    }
+
+    [TestMethod]
+    public async Task PreserveZeroStop_DetachesAllSourcesWithoutResettingMasterFade()
+    {
+        var musicPath = CreateConstantWaveFile(5, 0.2f);
+        var ambiencePath = CreateConstantWaveFile(5, 0.1f);
+        var output = new FakeWavePlayer();
+        await using var engine = new AudioEngine(() => output);
+
+        try
+        {
+            await engine.PlayAsync(Track(musicPath), 197);
+            await engine.PlayAmbienceAsync(Track(ambiencePath), 1f);
+            await engine.FadeMasterAsync(MasterFadeDirection.Out, TimeSpan.Zero);
+            await engine.StopSourcesPreservingMasterFadeAsync();
+
+            var progress = await engine.GetProgressAsync();
+            Assert.IsNull(progress.PlaybackId);
+            Assert.IsEmpty(progress.AmbienceSnapshots);
+            Assert.AreEqual(0f, progress.MasterFadeGain);
+            Assert.AreEqual(MasterFadeState.Muted, progress.MasterFadeState);
+            Assert.AreEqual(0, engine.MusicInputCount);
+            Assert.AreEqual(0, engine.AmbienceInputCount);
+            Assert.AreEqual(1, output.StopCount);
+        }
+        finally
+        {
+            await engine.DisposeAsync();
+            File.Delete(musicPath);
+            File.Delete(ambiencePath);
+        }
+    }
+
+    [TestMethod]
     public async Task OutputFaultDuringOverlap_ReleasesBothWithIncomingId()
     {
         var firstPath = CreateConstantWaveFile(3);
@@ -1284,6 +1703,7 @@ public sealed class AudioEngineTests
         var engine = new AudioEngine(() => output);
         try
         {
+            await engine.ConfigureTimingAsync(TimeSpan.FromSeconds(2), TimeSpan.Zero);
             await engine.PlayAsync(Track(firstPath), 231);
             await engine.PlayAsync(Track(secondPath), 232, ImmediateTransitionMode.Crossfade);
             output.PumpFrames(47_999);
@@ -1310,6 +1730,7 @@ public sealed class AudioEngineTests
 
         try
         {
+            await engine.ConfigureTimingAsync(TimeSpan.FromSeconds(2), TimeSpan.Zero);
             await engine.PlayAmbienceAsync(Track(path), 0.5f);
             Assert.AreEqual(1, engine.AmbienceInputCount);
             Assert.AreEqual(0f, output.ReadFrames(1)[0]);
@@ -1327,6 +1748,41 @@ public sealed class AudioEngineTests
             await WaitUntilAsync(() => engine.AmbienceInputCount == 0);
             Assert.IsEmpty((await engine.GetProgressAsync()).AmbienceSnapshots);
             AssertFileReleased(path);
+        }
+        finally
+        {
+            await engine.DisposeAsync();
+            File.Delete(path);
+        }
+    }
+
+    [TestMethod]
+    public async Task AmbienceSourceGain_UsesIndependentMediumRampAndRetargetsFromRenderedGain()
+    {
+        var path = CreateConstantWaveFile(5, 0.2f);
+        var output = new FakeWavePlayer();
+        await using var engine = new AudioEngine(() => output);
+
+        try
+        {
+            await engine.ConfigureTimingAsync(TimeSpan.FromSeconds(4), TimeSpan.Zero);
+            await engine.PlayAmbienceAsync(Track(path), 0.25f);
+            output.PumpFrames(192_000);
+            Assert.AreEqual(0.25f, (await engine.GetProgressAsync()).AmbienceSnapshots.Single().SourceGain, 0.00002f);
+
+            await engine.SetAmbienceSourceGainAsync(path, 0.75f);
+            output.PumpFrames(48_000);
+            var halfway = (await engine.GetProgressAsync()).AmbienceSnapshots.Single();
+            Assert.AreEqual(0.5f, halfway.SourceGain, 0.00002f, $"lifecycle={halfway.LifecycleGain}, position={halfway.Position}");
+            Assert.AreEqual(1f, halfway.LifecycleGain, 0.00002f);
+
+            await engine.SetAmbienceSourceGainAsync(path, 0.25f);
+            var firstRetargetedFrame = output.ReadFrames(1);
+            Assert.AreEqual(0.1f, firstRetargetedFrame[0], 0.00002f);
+
+            output.PumpFrames(48_000);
+            var completed = (await engine.GetProgressAsync()).AmbienceSnapshots.Single();
+            Assert.AreEqual(0.25f, completed.SourceGain, 0.00002f);
         }
         finally
         {
